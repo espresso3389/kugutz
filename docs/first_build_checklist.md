@@ -18,7 +18,6 @@
 - Confirm status shows “Local service online”
 - Click “Permissions → Approve” for a filesystem list and verify logs
 - Run a shell command (ls/pwd/whoami)
-- Configure OAuth provider and press Connect (Custom Tabs should open)
 
 ## 5) Optional local smoke test (desktop)
 - Run `python server/app.py`

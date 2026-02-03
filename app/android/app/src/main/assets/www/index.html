@@ -251,35 +251,6 @@
         </div>
       </div>
     <div class="panel">
-      <strong>OAuth</strong><span class="inline-status" id="oauthInlineStatus"></span>
-      <div class="muted">In-App Browser (Custom Tabs)</div>
-        <div class="row-actions">
-          <select id="oauthProvider">
-            <option value="openai">OpenAI</option>
-            <option value="claude">Claude</option>
-            <option value="kimi">Kimi</option>
-          </select>
-          <button class="btn" id="oauthConnect">Connect</button>
-          <button class="btn secondary" id="oauthStatus">Status</button>
-        </div>
-        <div class="row-actions">
-          <input id="oauthClientId" type="text" placeholder="Client ID" style="flex:1; min-width: 140px;" />
-          <input id="oauthClientSecret" type="password" placeholder="Client Secret (optional)" style="flex:1; min-width: 140px;" />
-        </div>
-        <div class="row-actions">
-          <input id="oauthAuthUrl" type="text" placeholder="Auth URL" style="flex:1; min-width: 140px;" />
-          <input id="oauthTokenUrl" type="text" placeholder="Token URL" style="flex:1; min-width: 140px;" />
-        </div>
-        <div class="row-actions">
-          <input id="oauthRedirect" type="text" placeholder="Redirect URI" value="kugutz://oauth" style="flex:1; min-width: 140px;" />
-          <input id="oauthScope" type="text" placeholder="Scope" style="flex:1; min-width: 140px;" />
-        </div>
-        <div class="row-actions">
-          <button class="btn" id="oauthSave">Save Config</button>
-        </div>
-        <div class="muted" id="oauthStatusText">Status: unknown</div>
-      </div>
-    <div class="panel">
       <strong>API Keys</strong><span class="inline-status" id="keyInlineStatus"></span>
       <div class="muted">Stored locally (SQLCipher if available)</div>
         <div class="row-actions">
@@ -313,7 +284,6 @@
     const shellStatus = document.getElementById("shellStatus");
     const auditStatus = document.getElementById("auditStatus");
     const hookStatus = document.getElementById("hookStatus");
-    const oauthInlineStatus = document.getElementById("oauthInlineStatus");
     const keyInlineStatus = document.getElementById("keyInlineStatus");
     const sessionEl = document.getElementById("session");
     const logStream = document.getElementById("logStream");
@@ -334,17 +304,6 @@
     const hookUrl = document.getElementById("hookUrl");
     const hookSave = document.getElementById("hookSave");
     const hookTest = document.getElementById("hookTest");
-    const oauthProvider = document.getElementById("oauthProvider");
-    const oauthConnect = document.getElementById("oauthConnect");
-    const oauthStatus = document.getElementById("oauthStatus");
-    const oauthSave = document.getElementById("oauthSave");
-    const oauthClientId = document.getElementById("oauthClientId");
-    const oauthClientSecret = document.getElementById("oauthClientSecret");
-    const oauthAuthUrl = document.getElementById("oauthAuthUrl");
-    const oauthTokenUrl = document.getElementById("oauthTokenUrl");
-    const oauthRedirect = document.getElementById("oauthRedirect");
-    const oauthScope = document.getElementById("oauthScope");
-    const oauthStatusText = document.getElementById("oauthStatusText");
     const keyProvider = document.getElementById("keyProvider");
     const keyValue = document.getElementById("keyValue");
     const keySave = document.getElementById("keySave");
@@ -354,12 +313,6 @@
 
     let restartPending = false;
     let restartPendingTimer = null;
-    const oauthPresets = {
-      openai: { auth_url: "", token_url: "", scope: "" },
-      claude: { auth_url: "", token_url: "", scope: "" },
-      kimi: { auth_url: "", token_url: "", scope: "" }
-    };
-
     let sessionId = null;
 
     function appendLog(line) {
@@ -736,51 +689,6 @@
       setInlineStatus(hookStatus, "tested", "ok");
       showToast("Webhook test sent");
     });
-    oauthProvider.addEventListener("change", () => {
-      const preset = oauthPresets[oauthProvider.value];
-      oauthAuthUrl.value = preset.auth_url;
-      oauthTokenUrl.value = preset.token_url;
-      oauthScope.value = preset.scope;
-      oauthRedirect.value = "kugutz://oauth";
-    });
-    oauthSave.addEventListener("click", async () => {
-      const provider = oauthProvider.value;
-      await fetch(`http://127.0.0.1:8765/auth/${provider}/config`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          client_id: oauthClientId.value.trim(),
-          client_secret: oauthClientSecret.value.trim(),
-          auth_url: oauthAuthUrl.value.trim(),
-          token_url: oauthTokenUrl.value.trim(),
-          redirect_uri: oauthRedirect.value.trim(),
-          scope: oauthScope.value.trim()
-        })
-      });
-      appendLog(`[oauth] config saved: ${provider}`);
-      setInlineStatus(oauthInlineStatus, "saved", "ok");
-      showToast("OAuth config saved");
-    });
-    oauthConnect.addEventListener("click", () => {
-      const provider = oauthProvider.value;
-      if (typeof AndroidBridge !== "undefined" && AndroidBridge.startOAuth) {
-        AndroidBridge.startOAuth(provider);
-        setInlineStatus(oauthInlineStatus, "connecting", "warn");
-        showToast("Opening OAuth in browser");
-      } else {
-        appendLog("[oauth] native bridge unavailable");
-        setInlineStatus(oauthInlineStatus, "unavailable", "bad");
-        showToast("OAuth unavailable");
-      }
-    });
-    oauthStatus.addEventListener("click", async () => {
-      const provider = oauthProvider.value;
-      const res = await fetch(`http://127.0.0.1:8765/auth/${provider}/status`);
-      const data = await res.json();
-      oauthStatusText.textContent = `Status: ${data.connected ? "connected" : "not connected"}`;
-      setInlineStatus(oauthInlineStatus, data.connected ? "connected" : "not connected", data.connected ? "ok" : "warn");
-      showToast("OAuth status updated");
-    });
     keySave.addEventListener("click", async () => {
       const provider = keyProvider.value;
       await fetch(`http://127.0.0.1:8765/keys/${provider}`, {
@@ -856,7 +764,6 @@
       shellStatus,
       auditStatus,
       hookStatus,
-      oauthInlineStatus,
       keyInlineStatus
     ].forEach(restoreInlineStatus);
     restorePythonStatus();

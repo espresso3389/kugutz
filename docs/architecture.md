@@ -60,7 +60,6 @@
 - Terminal/log stream in WebView
 - Android notifications
 - Slack/Discord webhooks (MVP)
- - OAuth via In-App Browser for provider auth (Custom Tabs)
 
 ## Module Layout (Proposed)
 - app/
@@ -130,7 +129,6 @@
 - WebView security constraints and local file access strategy
 - Webhook auth, rate limiting, and retry policy
 - Provider auth flows and key storage
-- In-App Browser OAuth wiring to Python service
 
 ## Embedded Features
 - HTTP client (by python)

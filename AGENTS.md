@@ -66,7 +66,3 @@ Build an Android 14+ app that provides a Python development environment with:
 - Unit tests for permission broker and tool router.
 - Integration tests for WebView <-> local service <-> agent loop.
 - Manual test checklist for runtime permissions.
-
-## Open Questions
-- Webhooks: destination types and auth (Slack, Discord initially)?
-- Auth flows for cloud AI providers?

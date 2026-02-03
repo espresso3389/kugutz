@@ -89,41 +89,6 @@ class Storage:
             )
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS oauth_config (
-                    provider TEXT PRIMARY KEY,
-                    client_id TEXT,
-                    client_secret TEXT,
-                    auth_url TEXT,
-                    token_url TEXT,
-                    redirect_uri TEXT,
-                    scope TEXT,
-                    updated_at INTEGER
-                )
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS oauth_state (
-                    state TEXT PRIMARY KEY,
-                    provider TEXT,
-                    code_verifier TEXT,
-                    created_at INTEGER
-                )
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS oauth_token (
-                    provider TEXT PRIMARY KEY,
-                    access_token TEXT,
-                    refresh_token TEXT,
-                    expires_at INTEGER,
-                    updated_at INTEGER
-                )
-                """
-            )
-            cur.execute(
-                """
                 CREATE TABLE IF NOT EXISTS api_keys (
                     provider TEXT PRIMARY KEY,
                     api_key TEXT,
@@ -234,84 +199,6 @@ class Storage:
                 (limit,),
             )
             return [dict(r) for r in cur.fetchall()]
-
-    def set_oauth_config(self, provider: str, config: Dict) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO oauth_config
-                (provider, client_id, client_secret, auth_url, token_url, redirect_uri, scope, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(provider) DO UPDATE SET
-                    client_id=excluded.client_id,
-                    client_secret=excluded.client_secret,
-                    auth_url=excluded.auth_url,
-                    token_url=excluded.token_url,
-                    redirect_uri=excluded.redirect_uri,
-                    scope=excluded.scope,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    provider,
-                    config.get("client_id"),
-                    config.get("client_secret"),
-                    config.get("auth_url"),
-                    config.get("token_url"),
-                    config.get("redirect_uri"),
-                    config.get("scope"),
-                    _now_ms(),
-                ),
-            )
-
-    def get_oauth_config(self, provider: str) -> Optional[Dict]:
-        with self._connect() as conn:
-            cur = conn.execute("SELECT * FROM oauth_config WHERE provider = ?", (provider,))
-            row = cur.fetchone()
-            return dict(row) if row else None
-
-    def save_oauth_state(self, state: str, provider: str, code_verifier: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO oauth_state (state, provider, code_verifier, created_at) VALUES (?, ?, ?, ?)",
-                (state, provider, code_verifier, _now_ms()),
-            )
-
-    def get_oauth_state(self, state: str) -> Optional[Dict]:
-        with self._connect() as conn:
-            cur = conn.execute("SELECT * FROM oauth_state WHERE state = ?", (state,))
-            row = cur.fetchone()
-            return dict(row) if row else None
-
-    def delete_oauth_state(self, state: str) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM oauth_state WHERE state = ?", (state,))
-
-    def save_oauth_token(self, provider: str, token: Dict) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO oauth_token (provider, access_token, refresh_token, expires_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(provider) DO UPDATE SET
-                    access_token=excluded.access_token,
-                    refresh_token=excluded.refresh_token,
-                    expires_at=excluded.expires_at,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    provider,
-                    token.get("access_token"),
-                    token.get("refresh_token"),
-                    token.get("expires_at"),
-                    _now_ms(),
-                ),
-            )
-
-    def get_oauth_token(self, provider: str) -> Optional[Dict]:
-        with self._connect() as conn:
-            cur = conn.execute("SELECT * FROM oauth_token WHERE provider = ?", (provider,))
-            row = cur.fetchone()
-            return dict(row) if row else None
 
     def set_api_key(self, provider: str, api_key: str) -> None:
         with self._connect() as conn:

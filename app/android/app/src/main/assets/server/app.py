@@ -8,11 +8,6 @@ import json
 import time
 from typing import Dict
 from pathlib import Path
-import base64
-import hashlib
-import secrets
-import urllib.parse
-import requests
 
 from storage.db import Storage
 from providers.webhooks import WebhookSender
@@ -215,114 +210,6 @@ async def test_webhook(payload: Dict):
 @app.get("/audit/recent")
 async def audit_recent(limit: int = 50):
     return {"events": storage.get_audit(limit)}
-
-
-@app.post("/auth/{provider}/config")
-async def auth_config(provider: str, payload: Dict):
-    storage.set_oauth_config(provider, payload)
-    await _log("oauth_config_set", {"provider": provider})
-    return {"status": "ok"}
-
-
-@app.get("/auth/{provider}/status")
-async def auth_status(provider: str):
-    token = storage.get_oauth_token(provider)
-    return {"connected": bool(token)}
-
-
-def _pkce_pair() -> Dict[str, str]:
-    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8").rstrip("=")
-    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
-    challenge = base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
-    return {"verifier": verifier, "challenge": challenge}
-
-
-@app.post("/auth/{provider}/start")
-async def auth_start(provider: str, payload: Dict = None):
-    config = storage.get_oauth_config(provider)
-    if not config or not config.get("auth_url"):
-        raise HTTPException(status_code=400, detail="oauth_not_configured")
-
-    pkce = _pkce_pair()
-    state = secrets.token_urlsafe(16)
-    storage.save_oauth_state(state, provider, pkce["verifier"])
-
-    redirect_uri = config.get("redirect_uri") or "kugutz://oauth"
-    scope = config.get("scope") or ""
-    params = {
-        "response_type": "code",
-        "client_id": config.get("client_id", ""),
-        "redirect_uri": redirect_uri,
-        "scope": scope,
-        "state": state,
-        "code_challenge": pkce["challenge"],
-        "code_challenge_method": "S256",
-    }
-    auth_url = config.get("auth_url") + "?" + urllib.parse.urlencode(params)
-    await _log("oauth_start", {"provider": provider})
-    return {"auth_url": auth_url, "state": state}
-
-
-async def _auth_exchange(provider: str, code: str, state: str):
-    state_row = storage.get_oauth_state(state)
-    if not state_row or state_row.get("provider") != provider:
-        raise HTTPException(status_code=400, detail="invalid_state")
-
-    config = storage.get_oauth_config(provider)
-    if not config or not config.get("token_url"):
-        raise HTTPException(status_code=400, detail="oauth_not_configured")
-
-    redirect_uri = config.get("redirect_uri") or "kugutz://oauth"
-    data = {
-        "grant_type": "authorization_code",
-        "client_id": config.get("client_id", ""),
-        "code": code,
-        "redirect_uri": redirect_uri,
-        "code_verifier": state_row.get("code_verifier"),
-    }
-    if config.get("client_secret"):
-        data["client_secret"] = config.get("client_secret")
-
-    try:
-        resp = requests.post(config.get("token_url"), data=data, timeout=8)
-        if not (200 <= resp.status_code < 300):
-            raise HTTPException(status_code=400, detail="token_exchange_failed")
-        token = resp.json()
-        expires_in = token.get("expires_in")
-        expires_at = _now_ms() + int(expires_in) * 1000 if expires_in else None
-        storage.save_oauth_token(provider, {
-            "access_token": token.get("access_token"),
-            "refresh_token": token.get("refresh_token"),
-            "expires_at": expires_at,
-        })
-        storage.delete_oauth_state(state)
-        await _log("oauth_connected", {"provider": provider})
-        return {"status": "ok"}
-    except requests.RequestException:
-        raise HTTPException(status_code=400, detail="token_exchange_failed")
-
-
-@app.post("/auth/{provider}/callback")
-async def auth_callback(provider: str, payload: Dict):
-    code = payload.get("code")
-    state = payload.get("state")
-    if not code or not state:
-        raise HTTPException(status_code=400, detail="missing_code_or_state")
-
-    return await _auth_exchange(provider, code, state)
-
-
-@app.post("/auth/callback")
-async def auth_callback_generic(payload: Dict):
-    code = payload.get("code")
-    state = payload.get("state")
-    if not code or not state:
-        raise HTTPException(status_code=400, detail="missing_code_or_state")
-    state_row = storage.get_oauth_state(state)
-    if not state_row:
-        raise HTTPException(status_code=400, detail="invalid_state")
-    provider = state_row.get("provider")
-    return await _auth_exchange(provider, code, state)
 
 
 @app.post("/keys/{provider}")

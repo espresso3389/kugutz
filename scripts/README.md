@@ -11,8 +11,9 @@ Builds a Python-for-Android runtime (Linux/WSL) and copies it into:
 ### Optional env vars
 - `ARCH` (default: arm64-v8a)
 - `ASSETS_PATH` (default: repo/app/android/app/src/main/assets/pyenv)
+- `JNI_LIBS_PATH` (default: repo/app/android/app/src/main/jniLibs)
 - `WORK_DIR` (default: /tmp/p4a_build_out)
-- `DIST_NAME` (default: kugutz)
+- `DIST_NAME` (default: androidvivepython)
 
 ## build_p4a.ps1
 Windows placeholder that reminds you to build in Linux/WSL and copy the runtime.
@@ -26,3 +27,5 @@ Simple localhost smoke test for the Python service. Run after `python server/app
 - Python tooling should use uv/venv (avoid system pip).
 - `build_p4a.sh` needs internet access to download build dependencies.
 - If SQLCipher headers are missing, the build retries without `pysqlcipher3`.
+- If `tclsh` is missing, `build_p4a.sh` builds a local Tcl under `$WORK_DIR/tcl` for SQLCipher amalgamation.
+- Native libs from the dist are copied into `app/android/app/src/main/jniLibs/<arch>/`.

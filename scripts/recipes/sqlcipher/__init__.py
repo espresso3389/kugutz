@@ -1,3 +1,4 @@
+import os
 from os.path import join, exists
 import shutil
 
@@ -9,7 +10,6 @@ import sh
 
 class SqlcipherRecipe(NDKRecipe):
     name = "sqlcipher"
-    name = 'sqlcipher'
     version = '4.5.6'
     url = 'https://github.com/sqlcipher/sqlcipher/archive/refs/tags/v{version}.zip'
     generated_libraries = ['sqlcipher']
@@ -21,11 +21,16 @@ class SqlcipherRecipe(NDKRecipe):
     def prebuild_arch(self, arch):
         super().prebuild_arch(arch)
         build_dir = self.get_build_dir(arch.arch)
+        env = self.get_recipe_env(arch)
+        tclsh_cmd = os.environ.get('TCLSH_CMD')
         with current_directory(build_dir):
             if not exists('sqlite3.c') or not exists('sqlite3.h'):
                 if exists('configure'):
-                    shprint(sh.Command('./configure'))
-                shprint(sh.make, 'sqlite3.c', 'sqlite3.h')
+                    shprint(sh.Command('./configure'), _env=env)
+                if tclsh_cmd:
+                    shprint(sh.make, f'TCLSH_CMD={tclsh_cmd}', 'sqlite3.c', 'sqlite3.h', _env=env)
+                else:
+                    shprint(sh.make, 'sqlite3.c', 'sqlite3.h', _env=env)
 
         ensure_dir(join(build_dir, 'jni'))
         shutil.copyfile(join(self.get_recipe_dir(), 'Android.mk'),

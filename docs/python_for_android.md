@@ -27,21 +27,20 @@ export ASSETS_PATH=/path/to/repo/app/android/app/src/main/assets/pyenv
 
 ## Tooling Note
 - The build script uses uv/venv for Python tooling (no system pip).
+
 ## SQLCipher Note
 - The script attempts to include `pysqlcipher3` by default.
-- If SQLCipher headers are unavailable, it retries without `pysqlcipher3` and the app will fall back to standard sqlite.
 - SQLCipher builds use custom p4a recipes in `scripts/recipes/`.
+- If `tclsh` is missing, the build script compiles a local Tcl to generate SQLCipher amalgamation.
 
 ## Output Note
 - The build copies the Python **bundle** (stdlib.zip + modules) to `assets/pyenv`.
 - This is not a standalone `bin/python`. The Android runtime integration will need to load the bundle via a Python service, not spawn a system process.
+- Native libs from the dist (e.g., `libsqlcipher.so`, `libcrypto1.1.so`, `libssl1.1.so`) are copied into `app/android/app/src/main/jniLibs/<arch>/`.
 
 ## Windows Note
 Python-for-Android is typically used on Linux. For Windows, use WSL or a Linux CI runner.
 
-## Output Layout Expectation
-Ensure `app/android/app/src/main/assets/pyenv/bin/python` exists.
-
-## SQLCipher Notes
+## SQLCipher Runtime Notes
 - If `SQLCIPHER_KEY_FILE` is present, the server attempts SQLCipher via `pysqlcipher3`.
 - On Android, `SqlcipherKeyManager` generates a key, stores it encrypted with Android Keystore, and writes the plaintext key to `filesDir/secrets/sqlcipher.key` at runtime for Python to read.

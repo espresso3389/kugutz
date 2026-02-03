@@ -5,6 +5,53 @@ on:
   pull_request:
 
 jobs:
+  p4a-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf \
+            automake \
+            build-essential \
+            libtool \
+            pkg-config \
+            unzip \
+            zip \
+            zlib1g-dev
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android NDK
+        run: |
+          yes | sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;29.0.14206865"
+      - name: Build Python-for-Android runtime
+        env:
+          SDK_DIR: ${{ env.ANDROID_SDK_ROOT }}
+          NDK_DIR: ${{ env.ANDROID_SDK_ROOT }}/ndk/29.0.14206865
+          ARCH: arm64-v8a
+          DIST_NAME: androidvivepython_ci
+        run: |
+          ./scripts/build_p4a.sh
+      - name: Upload Python bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyenv-bundle
+          path: app/android/app/src/main/assets/pyenv
+      - name: Upload JNI libs
+        uses: actions/upload-artifact@v4
+        with:
+          name: jni-libs
+          path: app/android/app/src/main/jniLibs
+
   smoke-test:
     runs-on: ubuntu-latest
     strategy:

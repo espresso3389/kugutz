@@ -19,6 +19,7 @@ fi
 
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$WORK_DIR/.uv-cache}"
 VENV_DIR="$WORK_DIR/.venv-p4a"
+export ACLOCAL_PATH="${ACLOCAL_PATH:-/usr/share/aclocal:/usr/share/aclocal-1.16:/usr/local/share/aclocal}"
 
 if [[ -z "$TCLSH_CMD" ]]; then
   if command -v tclsh >/dev/null 2>&1; then

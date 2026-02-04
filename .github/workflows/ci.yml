@@ -22,11 +22,14 @@ jobs:
           sudo apt-get install -y \
             autoconf \
             automake \
+            autoconf-archive \
             build-essential \
+            gettext \
             libtool-bin \
             m4 \
             libtool \
             pkg-config \
+            pkgconf \
             unzip \
             zip \
             zlib1g-dev

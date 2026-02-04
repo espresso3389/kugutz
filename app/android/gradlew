@@ -27,7 +27,7 @@ APP_HOME=`cd "$APP_HOME" && pwd`
 APP_NAME="Gradle"
 APP_BASE_NAME=`basename "$0"`
 
-DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
+DEFAULT_JVM_OPTS='-Xmx64m -Xms64m'
 
 # Use the maximum available, or set MAX_FD != -1 to use that value.
 MAX_FD="maximum"
@@ -64,6 +64,14 @@ case "`uname`" in
 esac
 
 CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
+WRAPPER_SHARED_JAR=$APP_HOME/gradle/wrapper/gradle-wrapper-shared.jar
+if [ -f "$WRAPPER_SHARED_JAR" ]; then
+    CLASSPATH="$CLASSPATH:$WRAPPER_SHARED_JAR"
+fi
+WRAPPER_CLI_JAR=$APP_HOME/gradle/wrapper/gradle-cli.jar
+if [ -f "$WRAPPER_CLI_JAR" ]; then
+    CLASSPATH="$CLASSPATH:$WRAPPER_CLI_JAR"
+fi
 
 # Determine the Java command to use to start the JVM.
 if [ -n "$JAVA_HOME" ] ; then
@@ -147,24 +155,9 @@ if [ "$cygwin" = "true" -o "$msys" = "true" ] ; then
     esac
 fi
 
-# Escape application args
-save () {
-    for i do printf "%s\\n" "$i" | sed "s/'/'\\\\''/g;1s/^/'/;\$s/\$/' \\/" ; done
-    echo " "
-}
-APP_ARGS=`save "$@"`
 
 # Collect all arguments for the java command, following the shell quoting and substitution rules
-set --
-    "-Dorg.gradle.appname=$APP_BASE_NAME" \
-    $DEFAULT_JVM_OPTS \
-    $JAVA_OPTS \
-    $GRADLE_OPTS \
-    "-classpath" \
-    "$CLASSPATH" \
-    org.gradle.wrapper.GradleWrapperMain \
-    "$APP_ARGS"
-
+set -- "-Dorg.gradle.appname=$APP_BASE_NAME" $DEFAULT_JVM_OPTS $JAVA_OPTS $GRADLE_OPTS "-classpath" "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"
 # by default we should be in the correct project dir, but when run from Finder on Mac, the
 # working directory is wrong
 if [ "$(uname)" = "Darwin" ] && [ "$HOME" = "$PWD" ]; then

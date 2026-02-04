@@ -242,7 +242,7 @@ index 94ae728..2bca630 100644
  
  /* Checks that a file is owned by the user or root, and isn't writable by
 diff --git a/src/svr-chansession.c b/src/svr-chansession.c
-index 11205f3..48fb1fc 100644
+index 11205f3..c293a5b 100644
 --- a/src/svr-chansession.c
 +++ b/src/svr-chansession.c
 @@ -597,6 +597,12 @@ static int sessionpty(struct ChanSess * chansess) {
@@ -250,10 +250,10 @@ index 11205f3..48fb1fc 100644
  		return DROPBEAR_FAILURE;
  	}
 +#ifdef __ANDROID__
-+	dropbear_log(LOG_WARNING, "pty requested but unsupported; falling back to no-pty");
++	dropbear_log(LOG_WARNING, "pty requested but unsupported; rejecting pty request");
 +	m_free(chansess->term);
 +	chansess->term = NULL;
-+	return DROPBEAR_SUCCESS;
++	return DROPBEAR_FAILURE;
 +#endif
  
  	/* allocate the pty */
@@ -263,12 +263,12 @@ index 11205f3..48fb1fc 100644
  	if (pty_allocate(&chansess->master, &chansess->slave, namebuf, 64) == 0) {
  		TRACE(("leave sessionpty: failed to allocate pty"))
 +#ifdef __ANDROID__
-+		dropbear_log(LOG_WARNING, "pty_allocate failed, falling back to no-pty");
++		dropbear_log(LOG_WARNING, "pty_allocate failed, rejecting pty request");
 +		m_free(chansess->term);
 +		chansess->term = NULL;
-+		return DROPBEAR_SUCCESS;
-+#else
  		return DROPBEAR_FAILURE;
++#else
++		return DROPBEAR_FAILURE;
 +#endif
  	}
  	
@@ -288,7 +288,7 @@ index 11205f3..48fb1fc 100644
  
  	/* Set up the rows/col counts */
  	sessionwinchange(chansess);
-@@ -1050,6 +1065,55 @@ static void execchild(const void *user_data) {
+@@ -1050,6 +1065,65 @@ static void execchild(const void *user_data) {
  	svr_agentset(chansess);
  #endif
  
@@ -306,13 +306,23 @@ index 11205f3..48fb1fc 100644
 +					return;
 +				}
 +				if (ch == '\r') {
-+					continue;
++					(void)write(1, "\r\n", 2);
++					break;
 +				}
 +				if (ch == '\n') {
++					(void)write(1, "\r\n", 2);
 +					break;
++				}
++				if (ch == '\b' || ch == 0x7f) {
++					if (pos > 0) {
++						pos--;
++						(void)write(1, "\b \b", 3);
++					}
++					continue;
 +				}
 +				if (pos + 1 < sizeof(linebuf)) {
 +					linebuf[pos++] = ch;
++					(void)write(1, &ch, 1);
 +				}
 +			}
 +			linebuf[pos] = '\0';

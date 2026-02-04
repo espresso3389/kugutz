@@ -43,7 +43,7 @@ if [[ ! -d dropbear-src ]]; then
     # It's not a git repo, but initializing one makes it easier to manage local patches
     git init -q
     git add -A
-    git commit -q -m "${TARBALL} import (original)"
+    git commit -q -m "orig"
     popd >/dev/null
   fi
 fi

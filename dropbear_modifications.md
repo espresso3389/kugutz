@@ -36,10 +36,19 @@ Below is a concise explanation of what we change and why.
      - `chown/chmod ... Permission denied`
    - **Fixes:**
      - Add Android-specific PTMX path (best-effort).
-     - If PTY allocation or setup fails, **fall back to no-pty** instead of aborting the session.
+     - If PTY allocation or setup fails, **reject the PTY request** (so the client stays in no-PTY mode).
      - Downgrade `pty_setowner` fatal errors to warnings.
      - Skip `pty_setowner` if there is no passwd entry.
-   - **Impact:** Non-interactive SSH commands work reliably, and PTY requests degrade to no-pty rather than crashing.
+   - **Impact:** Non-interactive SSH commands work reliably, and PTY requests are rejected cleanly.
+
+6) **Line-mode shell input echoing (no-PTY)**
+   - **Files patched:** `src/svr-chansession.c`
+   - **Why:** When the SSH client runs without a PTY, input is not echoed by the terminal driver. We provide a minimal line-mode loop to keep the shell usable.
+   - **Fixes:**
+     - Echo typed characters.
+     - Handle backspace/delete.
+     - Emit CRLF on Enter.
+   - **Impact:** The `kugutz>` prompt behaves more like a basic terminal even without PTY support.
 
 6) **Disable agent forwarding**
    - **Files patched:** `localoptions.h`

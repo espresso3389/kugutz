@@ -7,3 +7,6 @@ pyenv/
 app/android/app/build/
 app/android/app/src/main/assets/bin/
 .dropbear-build/
+gradle-cli.jar
+gradle-wrapper-shared.jar
+gradle-wrapper-classpath.properties

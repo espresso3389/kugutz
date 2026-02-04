@@ -110,7 +110,7 @@ index 9f12d67..fd69661 100644
  			}
  		}
 diff --git a/src/svr-auth.c b/src/svr-auth.c
-index de01458..72eb080 100644
+index de01458..95cc78a 100644
 --- a/src/svr-auth.c
 +++ b/src/svr-auth.c
 @@ -38,6 +38,60 @@
@@ -205,21 +205,21 @@ index de01458..72eb080 100644
  		if (valid_user
  				&& svr_opts.allowblankpass
  				&& !svr_opts.noauthpass
-@@ -147,6 +217,14 @@ void recv_msg_userauth_request() {
- #if DROPBEAR_SVR_PASSWORD_AUTH
- 	if (!svr_opts.noauthpass &&
- 			!(svr_opts.norootpass && ses.authstate.pw_uid == 0) ) {
-+#if defined(DROPBEAR_SVR_PASSWORD_AUTH_PIN_ONLY)
-+		if (!pin_allowed()) {
-+			ses.authstate.authtypes &= ~AUTH_TYPE_PASSWORD;
-+			send_msg_userauth_failure(0, 1);
-+			goto out;
-+		}
-+		ses.authstate.authtypes |= AUTH_TYPE_PASSWORD;
-+#endif
- 		/* user wants to try password auth */
+@@ -151,6 +221,14 @@ void recv_msg_userauth_request() {
  		if (methodlen == AUTH_METHOD_PASSWORD_LEN &&
  				strncmp(methodname, AUTH_METHOD_PASSWORD,
+ 					AUTH_METHOD_PASSWORD_LEN) == 0) {
++#if defined(DROPBEAR_SVR_PASSWORD_AUTH_PIN_ONLY)
++			if (!pin_allowed()) {
++				ses.authstate.authtypes &= ~AUTH_TYPE_PASSWORD;
++				send_msg_userauth_failure(0, 1);
++				goto out;
++			}
++			ses.authstate.authtypes |= AUTH_TYPE_PASSWORD;
++#endif
+ 			svr_auth_password(valid_user);
+ 			goto out;
+ 		}
 @@ -263,12 +341,19 @@ static int checkusername(const char *username, unsigned int userlen) {
  
  	/* check that user exists */

@@ -612,7 +612,7 @@ def _start_dropbear(port: int, log_event: bool = True) -> Dict:
         env["DROPBEAR_PIN_FILE"] = str(ssh_pin_file)
         log_path = ssh_dir / "dropbear.log"
 
-        log_fh = open(log_path, "a", encoding="utf-8")
+        log_fh = open(log_path, "a", encoding="utf-8", buffering=1)
         args = [
             str(bin_path),
             "-F",

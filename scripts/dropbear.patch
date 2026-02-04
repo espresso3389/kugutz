@@ -425,7 +425,7 @@ index 94ae728..09ee3b4 100644
  
  /* Checks that a file is owned by the user or root, and isn't writable by
 diff --git a/src/svr-chansession.c b/src/svr-chansession.c
-index 11205f3..c293a5b 100644
+index 11205f3..c7b8c6b 100644
 --- a/src/svr-chansession.c
 +++ b/src/svr-chansession.c
 @@ -597,6 +597,12 @@ static int sessionpty(struct ChanSess * chansess) {
@@ -471,7 +471,7 @@ index 11205f3..c293a5b 100644
  
  	/* Set up the rows/col counts */
  	sessionwinchange(chansess);
-@@ -1050,6 +1065,65 @@ static void execchild(const void *user_data) {
+@@ -1050,6 +1065,63 @@ static void execchild(const void *user_data) {
  	svr_agentset(chansess);
  #endif
  
@@ -499,13 +499,11 @@ index 11205f3..c293a5b 100644
 +				if (ch == '\b' || ch == 0x7f) {
 +					if (pos > 0) {
 +						pos--;
-+						(void)write(1, "\b \b", 3);
 +					}
 +					continue;
 +				}
 +				if (pos + 1 < sizeof(linebuf)) {
 +					linebuf[pos++] = ch;
-+					(void)write(1, &ch, 1);
 +				}
 +			}
 +			linebuf[pos] = '\0';

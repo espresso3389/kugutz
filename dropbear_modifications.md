@@ -91,17 +91,17 @@ The build script:
 When you need to change Dropbear modifications, generate a fresh patch file from a clean source tree. This keeps the build script simple and the patch reviewable.
 
 Recommended flow (single working tree):
-1. Use `.dropbear-build/dropbear-src.patched` as the only working tree (the build script uses it too).
+1. Use `.dropbear-build/src` as the only working tree (the build script uses it too).
 2. Initialize a git baseline there:
    - `git init`
    - `git add .`
    - `git commit -m "orig"`
-3. Apply your edits in `.dropbear-build/dropbear-src.patched`.
+3. Apply your edits in `.dropbear-build/src`.
 4. Generate the patch:
-   - `git -C .dropbear-build/dropbear-src.patched diff --patch > /home/kawasaki/work/kugut/scripts/dropbear.patch`
-5. Reset the working tree back to the baseline so builds use clean+patch:
-   - `git -C .dropbear-build/dropbear-src.patched reset --hard orig`
-   - `git -C .dropbear-build/dropbear-src.patched clean -fd`
+   - `git -C .dropbear-build/src diff --patch > /home/kawasaki/work/kugut/scripts/dropbear.patch`
+5. Reset the working tree back to the baseline (first commit) so builds use clean+patch:
+   - `git -C .dropbear-build/src reset --hard $(git -C .dropbear-build/src rev-list --max-parents=0 HEAD | tail -n 1)`
+   - `git -C .dropbear-build/src clean -fd`
 
 Shortcut:
 - `scripts/finalize_dropbear_patch.sh` (generates the patch, then resets and cleans)

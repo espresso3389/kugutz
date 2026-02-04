@@ -75,11 +75,13 @@ build_one() {
   local jni_out="$JNI_DIR/$abi"
   local build_dir="$WORK_DIR/build-$abi"
   local use_patch=1
+  local base_commit=""
 
   rm -rf "$build_dir"
   mkdir -p "$build_dir"
-  if git -C "$SRC_DIR" rev-parse orig >/dev/null 2>&1 \
-    && git -C "$SRC_DIR" diff --quiet orig..HEAD \
+  base_commit=$(git -C "$SRC_DIR" rev-list --max-parents=0 HEAD | tail -n 1)
+  if [[ -n "$base_commit" ]] \
+    && git -C "$SRC_DIR" diff --quiet "${base_commit}..HEAD" \
     && git -C "$SRC_DIR" diff --quiet \
     && [[ -z "$(git -C "$SRC_DIR" status --porcelain)" ]]; then
     echo "Using clean source + patch for $abi build"

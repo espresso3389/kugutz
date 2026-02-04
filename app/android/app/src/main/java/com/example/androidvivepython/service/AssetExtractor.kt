@@ -29,6 +29,65 @@ class AssetExtractor(private val context: Context) {
         }
     }
 
+    fun extractUiAssetsIfMissing(): File? {
+        return try {
+            val targetDir = File(context.filesDir, "www")
+            if (targetDir.exists()) {
+                val entries = targetDir.list()
+                if (entries != null && entries.isNotEmpty()) {
+                    return targetDir
+                }
+            }
+            targetDir.mkdirs()
+            copyAssetDir("www", targetDir)
+            targetDir
+        } catch (ex: Exception) {
+            Log.e(TAG, "Failed to extract UI assets", ex)
+            null
+        }
+    }
+
+    fun resetUiAssets(): File? {
+        return try {
+            val root = context.filesDir
+            val targetDir = File(root, "www")
+            val tmpDir = File(root, "www.tmp")
+            val backupDir = File(root, "www.bak")
+
+            if (tmpDir.exists()) {
+                deleteRecursive(tmpDir)
+            }
+            tmpDir.mkdirs()
+            copyAssetDir("www", tmpDir)
+
+            if (backupDir.exists()) {
+                deleteRecursive(backupDir)
+            }
+            if (targetDir.exists()) {
+                if (!targetDir.renameTo(backupDir)) {
+                    deleteRecursive(targetDir)
+                }
+            }
+
+            if (!tmpDir.renameTo(targetDir)) {
+                // Fallback: try to restore previous version.
+                if (backupDir.exists()) {
+                    backupDir.renameTo(targetDir)
+                }
+                deleteRecursive(tmpDir)
+                return null
+            }
+
+            if (backupDir.exists()) {
+                deleteRecursive(backupDir)
+            }
+            targetDir
+        } catch (ex: Exception) {
+            Log.e(TAG, "Failed to reset UI assets", ex)
+            null
+        }
+    }
+
     private fun copyAssetDir(assetPath: String, outDir: File) {
         val assetManager = context.assets
         val entries = assetManager.list(assetPath) ?: return
@@ -57,6 +116,15 @@ class AssetExtractor(private val context: Context) {
                 input.copyTo(output)
             }
         }
+    }
+
+    private fun deleteRecursive(file: File) {
+        if (file.isDirectory) {
+            file.listFiles()?.forEach { child ->
+                deleteRecursive(child)
+            }
+        }
+        file.delete()
     }
 
     companion object {

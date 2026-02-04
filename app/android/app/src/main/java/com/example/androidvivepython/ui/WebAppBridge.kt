@@ -62,4 +62,12 @@ class WebAppBridge(private val activity: Activity) {
             activity.startForegroundService(intent)
         }
     }
+
+    @JavascriptInterface
+    fun resetUiToDefaults() {
+        handler.post {
+            val extractor = jp.espresso3389.kugutz.service.AssetExtractor(activity)
+            extractor.resetUiAssets()
+        }
+    }
 }

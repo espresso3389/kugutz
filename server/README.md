@@ -4,6 +4,7 @@ This is a minimal local HTTP server intended to run on-device.
 
 ## Endpoints (stub)
 - GET /health
+- GET /ui/version
 - POST /tools/{tool}/invoke
 - POST /permissions/request
 - GET /permissions/pending

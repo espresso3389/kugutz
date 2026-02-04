@@ -68,15 +68,27 @@ class MainActivity : AppCompatActivity() {
 
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
+        webView.settings.allowFileAccessFromFileURLs = true
+        webView.settings.allowUniversalAccessFromFileURLs = true
         webView.settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
         webView.clearCache(true)
         webView.clearHistory()
         webView.webChromeClient = WebChromeClient()
-        webView.webViewClient = WebViewClient()
+        webView.webViewClient = object : WebViewClient() {
+            override fun onReceivedError(
+                view: WebView,
+                request: android.webkit.WebResourceRequest,
+                error: android.webkit.WebResourceError
+            ) {
+                if (request.isForMainFrame) {
+                    view.postDelayed({ view.reload() }, 1200)
+                }
+            }
+        }
         webView.addJavascriptInterface(WebAppBridge(this), "AndroidBridge")
 
-        // Load local UI shell. It can call http://127.0.0.1:8765 once the service is running.
-        webView.loadUrl("file:///android_asset/www/index.html")
+        // Bootstrap from assets while waiting for the local server.
+        webView.loadUrl("file:///android_asset/www_bootstrap/index.html")
     }
 
     override fun onStart() {

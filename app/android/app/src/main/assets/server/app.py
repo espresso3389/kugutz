@@ -3,6 +3,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 import asyncio
 import json
 import time
@@ -34,9 +35,13 @@ storage = Storage(data_dir / "app.db")
 tool_router = ToolRouter(data_dir)
 program_dir = data_dir / "programs"
 program_dir.mkdir(parents=True, exist_ok=True)
+content_dir = Path(__file__).parent.parent / "www"
+content_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/ui", StaticFiles(directory=content_dir, html=True), name="ui")
 
 _PROGRAMS: Dict[str, Dict] = {}
 _PROGRAM_LOCK = threading.Lock()
+_UI_VERSION = 0
 
 
 def _now_ms() -> int:
@@ -48,12 +53,51 @@ async def _log(event: str, data: Dict):
     storage.add_audit(event, json.dumps(data))
 
 
+@app.middleware("http")
+async def add_ui_cache_headers(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/ui/"):
+        if request.url.path.endswith(".html") or request.url.path.endswith("/"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 def _emit_log(event: str, data: Dict):
     try:
         LOG_QUEUE.put_nowait({"event": event, "data": data, "ts": _now_ms()})
     except asyncio.QueueFull:
         pass
     storage.add_audit(event, json.dumps(data))
+
+
+def _start_ui_watcher():
+    def _scan():
+        latest = 0
+        for root, _, files in os.walk(content_dir):
+            for name in files:
+                try:
+                    mtime = int(Path(root, name).stat().st_mtime * 1000)
+                    if mtime > latest:
+                        latest = mtime
+                except Exception:
+                    continue
+        return latest
+
+    def _worker():
+        global _UI_VERSION
+        _UI_VERSION = _scan()
+        while True:
+            try:
+                latest = _scan()
+                if latest != _UI_VERSION:
+                    _UI_VERSION = latest
+                time.sleep(2)
+            except Exception:
+                time.sleep(2)
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def _spawn_program(code: str, args: Dict) -> Dict:
@@ -129,6 +173,11 @@ def _vault_request(command: str, name: str, payload: str = "") -> str:
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/ui/version")
+async def ui_version():
+    return {"version": _UI_VERSION}
 
 
 @app.post("/shutdown")
@@ -438,6 +487,7 @@ async def service_get_credential(name: str, credential: str, code_hash: str, tok
 if __name__ == "__main__":
     import uvicorn
 
+    _start_ui_watcher()
     config = uvicorn.Config(
         app,
         host="127.0.0.1",

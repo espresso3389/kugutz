@@ -163,7 +163,6 @@
 <body>
   <header>
     <h1>Kugutz</h1>
-    <div class="muted">Local agent UI shell (WebView)</div>
   </header>
   <div class="wrap">
     <div class="panel">
@@ -177,6 +176,13 @@
       <div class="row-actions">
         <button class="btn secondary" id="restartPython">Restart Python</button>
         <button class="btn danger" id="stopPython">Stop Python</button>
+      </div>
+    </div>
+    <div class="panel">
+      <strong>UI</strong>
+      <div class="muted">Reset replaces local UI files with defaults. Local changes will be lost.</div>
+      <div class="row-actions">
+        <button class="btn secondary" id="resetUi">Reset UI to Defaults</button>
       </div>
     </div>
 
@@ -209,6 +215,7 @@
     const toast = document.getElementById("toast");
     const restartPython = document.getElementById("restartPython");
     const stopPython = document.getElementById("stopPython");
+    const resetUi = document.getElementById("resetUi");
     const permStatus = document.getElementById("permStatus");
     const auditStatus = document.getElementById("auditStatus");
     const sessionEl = document.getElementById("session");
@@ -362,6 +369,21 @@
       toast.textContent = message;
       toast.classList.add("show");
       setTimeout(() => toast.classList.remove("show"), 2000);
+    }
+
+    let uiVersion = null;
+    async function pollUiVersion() {
+      try {
+        const res = await fetch("http://127.0.0.1:8765/ui/version");
+        const data = await res.json();
+        if (uiVersion !== null && data.version !== uiVersion) {
+          window.location.reload();
+          return;
+        }
+        uiVersion = data.version;
+      } catch (_) {
+        // ignore
+      }
     }
 
     statusDot.addEventListener("click", () => {
@@ -558,10 +580,23 @@
       }
     });
 
+    resetUi.addEventListener("click", () => {
+      if (!confirm("Reset UI to defaults? This will delete local UI changes.")) return;
+      if (typeof AndroidBridge !== "undefined" && AndroidBridge.resetUiToDefaults) {
+        AndroidBridge.resetUiToDefaults();
+        showToast("UI reset requested");
+        appendLog("[ui] reset requested");
+      } else {
+        showToast("Reset unavailable");
+      }
+    });
+
     setInterval(ping, 2000);
     setInterval(refreshPermissions, 3000);
     setInterval(refreshAudit, 4000);
+    setInterval(pollUiVersion, 3000);
     ping();
+    pollUiVersion();
     ensureSession();
     refreshPermissions();
     refreshAudit();

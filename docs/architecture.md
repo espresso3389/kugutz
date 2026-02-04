@@ -5,7 +5,7 @@
 - Embedded CPython runtime via Python-for-Android.
 - Local HTTP service on-device for agent APIs, IDE bridge, and tool routing.
 - Background service for long-running agent tasks.
-- Multi-channel user communication (in-app chat, terminal/log stream).
+- Multi-channel user communication (terminal/log stream).
 - Explicit user consent for all sensitive actions.
 
 ## High-Level Components
@@ -28,10 +28,10 @@
 
 3) Web UI (HTML/JS)
 - IDE shell UI in WebView
-- In-app chat panel
 - Terminal/log streaming view
 - Agent status + progress
 - Native consent trigger via JS bridge
+ - Served from user data directory (assets copied on first launch)
 
 ## Process Topology
 - Android app launches:

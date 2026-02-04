@@ -47,16 +47,33 @@ Below is a concise explanation of what we change and why.
 
 ## Where the Patches Live
 
-All modifications are applied during Dropbear build in:
+All modifications are applied during Dropbear build using:
 
+- `scripts/dropbear.patch`
 - `scripts/build_dropbear.sh`
 
-That script:
+The build script:
 1. Downloads the latest Dropbear tarball.
-2. Applies the patch set using inline Python edits.
+2. Applies `scripts/dropbear.patch` with `patch -p1`.
 3. Builds Dropbear for Android ABIs and installs binaries into:
    - `app/android/app/src/main/assets/bin/<abi>/`
    - `app/android/app/src/main/jniLibs/<abi>/`
+
+## How to Update the Patch (Dev Workflow)
+
+When you need to change Dropbear modifications, generate a fresh patch file from a clean source tree. This keeps the build script simple and the patch reviewable.
+
+Recommended flow (use the same tarball source the build script uses; no extra temp tree needed):
+1. Extract the Dropbear source from the tarball (same source as the build script uses), for example in `.dropbear-build/dropbear-src`.
+2. Initialize a git baseline:
+   - `git init`
+   - `git add .`
+   - `git commit -m "orig"`
+3. Apply your edits to the source tree.
+4. Generate the patch:
+   - `git diff --patch > /home/kawasaki/work/kugut/scripts/dropbear.patch`
+
+After that, the build script will apply the patch automatically during builds.
 
 ## Behavior Tradeoffs
 
@@ -69,4 +86,3 @@ That script:
 The goal is to provide a usable, secure SSH entry point within Android’s app sandbox **without root**. The changes are conservative: they remove assumptions that do not apply in this environment and avoid crashing on normal SSH flows.
 
 If you want to review or adjust any of these patches, check `scripts/build_dropbear.sh` and search for the patch blocks.
-

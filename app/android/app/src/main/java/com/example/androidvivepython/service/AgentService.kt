@@ -11,10 +11,12 @@ import androidx.core.app.NotificationCompat
 
 class AgentService : Service() {
     private lateinit var runtimeManager: PythonRuntimeManager
+    private var vaultServer: KeystoreVaultServer? = null
 
     override fun onCreate() {
         super.onCreate()
         runtimeManager = PythonRuntimeManager(this)
+        vaultServer = KeystoreVaultServer(this).apply { start() }
         startForeground(NOTIFICATION_ID, buildNotification())
         runtimeManager.start()
     }
@@ -39,6 +41,8 @@ class AgentService : Service() {
     }
 
     override fun onDestroy() {
+        vaultServer?.stop()
+        vaultServer = null
         runtimeManager.stop()
         super.onDestroy()
     }

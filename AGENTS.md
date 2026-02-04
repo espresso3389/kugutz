@@ -26,7 +26,7 @@ Build an Android 14+ app that provides a Python development environment with:
   - WebView/Chromium UI (custom IDE shell)
   - Terminal pane (PTY-based)
   - Permission broker (runtime prompts + audit log)
-  - Multi-channel user communication (in-app chat, terminal/log stream, notifications, webhooks)
+- Multi-channel user communication (in-app chat, terminal/log stream)
 - Local service layer (on-device)
   - Embedded CPython runtime
   - Local HTTP server for IDE + agent APIs

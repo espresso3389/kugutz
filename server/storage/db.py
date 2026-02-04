@@ -47,25 +47,6 @@ class Storage:
             cur = conn.cursor()
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id TEXT PRIMARY KEY,
-                    created_at INTEGER
-                )
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT,
-                    role TEXT,
-                    content TEXT,
-                    created_at INTEGER
-                )
-                """
-            )
-            cur.execute(
-                """
                 CREATE TABLE IF NOT EXISTS permissions (
                     id TEXT PRIMARY KEY,
                     tool TEXT,
@@ -79,20 +60,32 @@ class Storage:
             )
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS webhooks (
-                    provider TEXT PRIMARY KEY,
-                    url TEXT,
-                    enabled INTEGER,
+                CREATE TABLE IF NOT EXISTS credentials (
+                    name TEXT PRIMARY KEY,
+                    value TEXT,
                     updated_at INTEGER
                 )
                 """
             )
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS api_keys (
-                    provider TEXT PRIMARY KEY,
-                    api_key TEXT,
+                CREATE TABLE IF NOT EXISTS services (
+                    name TEXT PRIMARY KEY,
+                    code_hash TEXT,
+                    token TEXT,
+                    created_at INTEGER,
                     updated_at INTEGER
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS service_credentials (
+                    service_name TEXT,
+                    name TEXT,
+                    value TEXT,
+                    updated_at INTEGER,
+                    PRIMARY KEY(service_name, name)
                 )
                 """
             )
@@ -106,36 +99,6 @@ class Storage:
                 )
                 """
             )
-
-    def create_session(self) -> str:
-        session_id = f"s_{_now_ms()}"
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO sessions (id, created_at) VALUES (?, ?)",
-                (session_id, _now_ms()),
-            )
-        return session_id
-
-    def get_session(self, session_id: str) -> Optional[Dict]:
-        with self._connect() as conn:
-            cur = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
-            row = cur.fetchone()
-            if not row:
-                return None
-            msg_cur = conn.execute(
-                "SELECT role, content, created_at FROM messages WHERE session_id = ? ORDER BY id",
-                (session_id,),
-            )
-            messages = [dict(m) for m in msg_cur.fetchall()]
-        return {"id": row["id"], "created_at": row["created_at"], "messages": messages}
-
-    def add_message(self, session_id: str, role: str, content: str) -> int:
-        with self._connect() as conn:
-            cur = conn.execute(
-                "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (session_id, role, content, _now_ms()),
-            )
-            return cur.lastrowid
 
     def create_permission_request(self, tool: str, detail: str, scope: str, expires_at: int | None) -> str:
         request_id = f"p_{_now_ms()}"
@@ -171,20 +134,6 @@ class Storage:
                 ("used", request_id),
             )
 
-    def set_webhook(self, provider: str, url: str, enabled: bool) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO webhooks (provider, url, enabled, updated_at) VALUES (?, ?, ?, ?)"
-                " ON CONFLICT(provider) DO UPDATE SET url=excluded.url, enabled=excluded.enabled, updated_at=excluded.updated_at",
-                (provider, url, 1 if enabled else 0, _now_ms()),
-            )
-
-    def get_webhooks(self) -> Dict[str, Dict]:
-        with self._connect() as conn:
-            cur = conn.execute("SELECT * FROM webhooks")
-            rows = [dict(r) for r in cur.fetchall()]
-        return {r["provider"]: r for r in rows}
-
     def add_audit(self, event: str, data: str) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -200,25 +149,89 @@ class Storage:
             )
             return [dict(r) for r in cur.fetchall()]
 
-    def set_api_key(self, provider: str, api_key: str) -> None:
+    def set_credential(self, name: str, value: str) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO api_keys (provider, api_key, updated_at)
+                INSERT INTO credentials (name, value, updated_at)
                 VALUES (?, ?, ?)
-                ON CONFLICT(provider) DO UPDATE SET
-                    api_key=excluded.api_key,
+                ON CONFLICT(name) DO UPDATE SET
+                    value=excluded.value,
                     updated_at=excluded.updated_at
                 """,
-                (provider, api_key, _now_ms()),
+                (name, value, _now_ms()),
             )
 
-    def get_api_key(self, provider: str) -> Optional[Dict]:
+    def get_credential(self, name: str) -> Optional[Dict]:
         with self._connect() as conn:
-            cur = conn.execute("SELECT * FROM api_keys WHERE provider = ?", (provider,))
+            cur = conn.execute("SELECT * FROM credentials WHERE name = ?", (name,))
             row = cur.fetchone()
             return dict(row) if row else None
 
-    def delete_api_key(self, provider: str) -> None:
+    def delete_credential(self, name: str) -> None:
         with self._connect() as conn:
-            conn.execute("DELETE FROM api_keys WHERE provider = ?", (provider,))
+            conn.execute("DELETE FROM credentials WHERE name = ?", (name,))
+
+    def list_credentials(self) -> List[Dict]:
+        with self._connect() as conn:
+            cur = conn.execute("SELECT name, updated_at FROM credentials ORDER BY name")
+            return [dict(r) for r in cur.fetchall()]
+
+    def upsert_service(self, name: str, code_hash: str, token: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO services (name, code_hash, token, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    code_hash=excluded.code_hash,
+                    token=excluded.token,
+                    updated_at=excluded.updated_at
+                """,
+                (name, code_hash, token, _now_ms(), _now_ms()),
+            )
+
+    def get_service(self, name: str) -> Optional[Dict]:
+        with self._connect() as conn:
+            cur = conn.execute("SELECT * FROM services WHERE name = ?", (name,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_services(self) -> List[Dict]:
+        with self._connect() as conn:
+            cur = conn.execute("SELECT name, code_hash, updated_at FROM services ORDER BY name")
+            return [dict(r) for r in cur.fetchall()]
+
+    def set_service_credential(self, service_name: str, name: str, value: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO service_credentials (service_name, name, value, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(service_name, name) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at
+                """,
+                (service_name, name, value, _now_ms()),
+            )
+
+    def get_service_credential(self, service_name: str, name: str) -> Optional[Dict]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT * FROM service_credentials WHERE service_name = ? AND name = ?",
+                (service_name, name),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_service_credentials(self, service_name: str) -> List[Dict]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT name, updated_at FROM service_credentials WHERE service_name = ? ORDER BY name",
+                (service_name,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def delete_service_credentials(self, service_name: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM service_credentials WHERE service_name = ?", (service_name,))

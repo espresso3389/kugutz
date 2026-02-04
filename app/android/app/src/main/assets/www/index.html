@@ -173,7 +173,7 @@
         <div class="muted" id="status">Booting local service...</div>
       </div>
       <div class="muted" id="statusDetail">Last action: (none)</div>
-      <div class="muted" id="session">Session: (none)</div>
+      <div class="muted" id="session">Session: (disabled)</div>
       <div class="row-actions">
         <button class="btn secondary" id="restartPython">Restart Python</button>
         <button class="btn danger" id="stopPython">Stop Python</button>
@@ -181,26 +181,6 @@
     </div>
 
     <div class="row">
-    <div class="panel">
-      <strong>Chat</strong><span class="inline-status" id="chatStatus"></span>
-      <ul id="chatHistory"></ul>
-        <textarea id="chatInput" placeholder="Ask the agent..."></textarea>
-        <div class="row-actions">
-          <button class="btn" id="sendBtn">Send</button>
-          <button class="btn secondary" id="toolBtn">Invoke Tool (filesystem)</button>
-        </div>
-        <div class="row-actions">
-          <input id="fsPath" type="text" placeholder="Path (relative)" style="flex:1; min-width: 140px;" />
-          <button class="btn secondary" id="fsList">List Path</button>
-        </div>
-        <div class="row-actions">
-          <select id="permScope">
-            <option value="once">One-time</option>
-            <option value="session">Session (minutes)</option>
-          </select>
-          <input id="permDuration" type="number" min="1" placeholder="30" style="width: 80px;" />
-        </div>
-      </div>
       <div class="panel">
         <strong>Logs</strong>
         <pre id="logStream">(no logs yet)</pre>
@@ -208,65 +188,15 @@
     </div>
 
     <div class="row-3">
-    <div class="panel">
-      <strong>Permissions</strong><span class="inline-status" id="permStatus"></span>
-      <div class="muted">Pending requests</div>
+      <div class="panel">
+        <strong>Permissions</strong><span class="inline-status" id="permStatus"></span>
+        <div class="muted">Pending requests</div>
         <ul id="permList"></ul>
       </div>
-    <div class="panel">
-      <strong>Shell</strong><span class="inline-status" id="shellStatus"></span>
-      <div class="muted">Allowlisted commands: ls, pwd, whoami</div>
-        <div class="row-actions">
-          <select id="shellCmd">
-            <option value="ls">ls</option>
-            <option value="pwd">pwd</option>
-            <option value="whoami">whoami</option>
-          </select>
-          <button class="btn secondary" id="shellRun">Run</button>
-        </div>
-        <pre id="shellOut">(no output yet)</pre>
-      </div>
-    <div class="panel">
-      <strong>Audit</strong><span class="inline-status" id="auditStatus"></span>
-      <div class="muted">Recent events</div>
-        <ul id="auditList"></ul>
-      </div>
       <div class="panel">
-        <strong>Notifications</strong>
-        <div class="muted">Native notification channel placeholder</div>
-      </div>
-    <div class="panel">
-      <strong>Webhooks</strong><span class="inline-status" id="hookStatus"></span>
-      <div class="muted">Slack/Discord</div>
-        <div class="row-actions">
-          <select id="hookProvider">
-            <option value="slack">Slack</option>
-            <option value="discord">Discord</option>
-          </select>
-          <input id="hookUrl" type="text" placeholder="Webhook URL" style="flex:1; min-width: 140px;" />
-        </div>
-        <div class="row-actions">
-          <button class="btn" id="hookSave">Save</button>
-          <button class="btn secondary" id="hookTest">Test</button>
-        </div>
-      </div>
-    <div class="panel">
-      <strong>API Keys</strong><span class="inline-status" id="keyInlineStatus"></span>
-      <div class="muted">Stored locally (SQLCipher if available)</div>
-        <div class="row-actions">
-          <select id="keyProvider">
-            <option value="openai">OpenAI</option>
-            <option value="claude">Claude</option>
-            <option value="kimi">Kimi</option>
-          </select>
-          <input id="keyValue" type="password" placeholder="API Key" style="flex:1; min-width: 140px;" />
-        </div>
-        <div class="row-actions">
-          <button class="btn" id="keySave">Save</button>
-          <button class="btn secondary" id="keyStatus">Status</button>
-          <button class="btn secondary" id="keyDelete">Delete</button>
-        </div>
-        <div class="muted" id="keyStatusText">Status: unknown</div>
+        <strong>Audit</strong><span class="inline-status" id="auditStatus"></span>
+        <div class="muted">Recent events</div>
+        <ul id="auditList"></ul>
       </div>
     </div>
   </div>
@@ -279,37 +209,14 @@
     const toast = document.getElementById("toast");
     const restartPython = document.getElementById("restartPython");
     const stopPython = document.getElementById("stopPython");
-    const chatStatus = document.getElementById("chatStatus");
     const permStatus = document.getElementById("permStatus");
-    const shellStatus = document.getElementById("shellStatus");
     const auditStatus = document.getElementById("auditStatus");
-    const hookStatus = document.getElementById("hookStatus");
-    const keyInlineStatus = document.getElementById("keyInlineStatus");
     const sessionEl = document.getElementById("session");
     const logStream = document.getElementById("logStream");
-    const chatHistory = document.getElementById("chatHistory");
-    const chatInput = document.getElementById("chatInput");
-    const sendBtn = document.getElementById("sendBtn");
-    const toolBtn = document.getElementById("toolBtn");
     const permList = document.getElementById("permList");
     const auditList = document.getElementById("auditList");
-    const fsPath = document.getElementById("fsPath");
-    const fsList = document.getElementById("fsList");
     const permScope = document.getElementById("permScope");
     const permDuration = document.getElementById("permDuration");
-    const shellCmd = document.getElementById("shellCmd");
-    const shellRun = document.getElementById("shellRun");
-    const shellOut = document.getElementById("shellOut");
-    const hookProvider = document.getElementById("hookProvider");
-    const hookUrl = document.getElementById("hookUrl");
-    const hookSave = document.getElementById("hookSave");
-    const hookTest = document.getElementById("hookTest");
-    const keyProvider = document.getElementById("keyProvider");
-    const keyValue = document.getElementById("keyValue");
-    const keySave = document.getElementById("keySave");
-    const keyStatus = document.getElementById("keyStatus");
-    const keyDelete = document.getElementById("keyDelete");
-    const keyStatusText = document.getElementById("keyStatusText");
 
     let restartPending = false;
     let restartPendingTimer = null;
@@ -325,10 +232,36 @@
       statusDetail.textContent = `${text} @ ${ts}`;
     }
 
-    function appendChat(role, content) {
-      const li = document.createElement("li");
-      li.textContent = `${role}: ${content}`;
-      chatHistory.appendChild(li);
+    function sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async function requestPermission(tool, detail) {
+      const scope = permScope ? permScope.value : "once";
+      const durationMin = scope === "session" && permDuration
+        ? parseInt(permDuration.value || "30", 10)
+        : 0;
+      const res = await fetch("http://127.0.0.1:8765/permissions/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool, detail, scope, duration_min: durationMin })
+      });
+      const req = await res.json();
+      appendLog(`[permission] requested: ${req.id}`);
+      await refreshPermissions();
+      return req.id;
+    }
+
+    async function waitForPermission(requestId, timeoutMs = 30000) {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        const res = await fetch(`http://127.0.0.1:8765/permissions/${requestId}`);
+        const req = await res.json();
+        if (req.status === "approved") return true;
+        if (req.status === "denied" || req.status === "expired" || req.status === "used") return false;
+        await sleep(1000);
+      }
+      return false;
     }
 
     async function ping() {
@@ -336,9 +269,6 @@
         const res = await fetch("http://127.0.0.1:8765/health");
         if (res.ok) {
           statusEl.textContent = "Local service online";
-          if (!sessionId) {
-            await ensureSession();
-          }
         } else {
           statusEl.textContent = "Local service error";
         }
@@ -442,21 +372,8 @@
       }
     });
 
-    async function ensureSession() {
-      if (sessionId) return;
-      try {
-        const res = await fetch("http://127.0.0.1:8765/sessions", { method: "POST" });
-        const data = await res.json();
-        sessionId = data.id;
-        sessionEl.textContent = `Session: ${sessionId}`;
-      } catch (err) {
-        sessionEl.textContent = "Session: (failed)";
-      }
-    }
-
-    setInterval(() => {
-      if (!sessionId) ensureSession();
-    }, 5000);
+    sessionId = null;
+    sessionEl.textContent = "Session: (disabled)";
 
     function setInlineStatus(el, text, tone = "neutral") {
       if (!el) return;
@@ -482,20 +399,6 @@
       }
     }
 
-    async function sendMessage() {
-      const content = chatInput.value.trim();
-      if (!content || !sessionId) return;
-      appendChat("user", content);
-      chatInput.value = "";
-      await fetch(`http://127.0.0.1:8765/sessions/${sessionId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: "user", content })
-      });
-      setInlineStatus(chatStatus, "sent", "ok");
-      showToast("Message sent");
-    }
-
     async function invokeTool(args = {}, requestId = null, toolName = "filesystem", detail = "List files") {
       const res = await fetch(`http://127.0.0.1:8765/tools/${toolName}/invoke`, {
         method: "POST",
@@ -512,9 +415,7 @@
       }
       const data = await res.json();
       appendLog(`[${toolName}] ${JSON.stringify(data)}`);
-      if (toolName === "shell") {
-        setInlineStatus(shellStatus, "ran", "ok");
-      }
+      // Shell UI removed; no inline status updates needed here.
       showToast(`${toolName} complete`);
       return data;
     }
@@ -554,12 +455,7 @@
           showToast("Permission approved");
           await refreshPermissions();
           if (p.tool === "filesystem") {
-            await invokeTool({ action: "list", path: fsPath.value.trim() || "." }, p.id, "filesystem");
-          } else if (p.tool === "shell") {
-            const result = await invokeTool({ cmd: [shellCmd.value] }, p.id, "shell", "Run shell command");
-            if (result && result.stdout !== undefined) {
-              shellOut.textContent = result.stdout || result.stderr || "(no output)";
-            }
+            await invokeTool({ action: "list", path: "." }, p.id, "filesystem");
           }
         };
         const deny = document.createElement("button");
@@ -629,93 +525,6 @@
       }
     }
 
-    sendBtn.addEventListener("click", sendMessage);
-    toolBtn.addEventListener("click", async () => {
-      const scope = permScope.value;
-      const durationMin = permScope.value === "session" ? parseInt(permDuration.value || "30", 10) : 0;
-      const res = await fetch("http://127.0.0.1:8765/permissions/request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tool: "filesystem", detail: "List files", scope, duration_min: durationMin })
-      });
-      const req = await res.json();
-      appendLog(`[permission] requested: ${req.id}`);
-      await refreshPermissions();
-    });
-    fsList.addEventListener("click", async () => {
-      const scope = permScope.value;
-      const durationMin = permScope.value === "session" ? parseInt(permDuration.value || "30", 10) : 0;
-      const res = await fetch("http://127.0.0.1:8765/permissions/request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tool: "filesystem", detail: "List path", scope, duration_min: durationMin })
-      });
-      const req = await res.json();
-      appendLog(`[permission] requested: ${req.id}`);
-      await refreshPermissions();
-    });
-    shellRun.addEventListener("click", async () => {
-      const scope = permScope.value;
-      const durationMin = permScope.value === "session" ? parseInt(permDuration.value || "30", 10) : 0;
-      const res = await fetch("http://127.0.0.1:8765/permissions/request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tool: "shell", detail: `Run ${shellCmd.value}`, scope, duration_min: durationMin })
-      });
-      const req = await res.json();
-      appendLog(`[permission] requested: ${req.id}`);
-      await refreshPermissions();
-    });
-    hookSave.addEventListener("click", async () => {
-      const provider = hookProvider.value;
-      const url = hookUrl.value.trim();
-      await fetch("http://127.0.0.1:8765/webhooks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, url, enabled: true })
-      });
-      appendLog(`[webhook] saved: ${provider}`);
-      setInlineStatus(hookStatus, "saved", "ok");
-      showToast("Webhook saved");
-    });
-    hookTest.addEventListener("click", async () => {
-      const provider = hookProvider.value;
-      await fetch("http://127.0.0.1:8765/webhooks/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, message: "Test from Kugutz" })
-      });
-      appendLog(`[webhook] test sent: ${provider}`);
-      setInlineStatus(hookStatus, "tested", "ok");
-      showToast("Webhook test sent");
-    });
-    keySave.addEventListener("click", async () => {
-      const provider = keyProvider.value;
-      await fetch(`http://127.0.0.1:8765/keys/${provider}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: keyValue.value.trim() })
-      });
-      appendLog(`[keys] saved: ${provider}`);
-      setInlineStatus(keyInlineStatus, "saved", "ok");
-      showToast("API key saved");
-    });
-    keyStatus.addEventListener("click", async () => {
-      const provider = keyProvider.value;
-      const res = await fetch(`http://127.0.0.1:8765/keys/${provider}/status`);
-      const data = await res.json();
-      keyStatusText.textContent = `Status: ${data.configured ? "configured" : "not configured"}`;
-      setInlineStatus(keyInlineStatus, data.configured ? "configured" : "not configured", data.configured ? "ok" : "warn");
-      showToast("API key status updated");
-    });
-    keyDelete.addEventListener("click", async () => {
-      const provider = keyProvider.value;
-      await fetch(`http://127.0.0.1:8765/keys/${provider}`, { method: "DELETE" });
-      keyStatusText.textContent = "Status: not configured";
-      appendLog(`[keys] deleted: ${provider}`);
-      setInlineStatus(keyInlineStatus, "deleted", "bad");
-      showToast("API key deleted");
-    });
 
     restartPython.addEventListener("click", () => {
       if (typeof AndroidBridge !== "undefined" && AndroidBridge.restartPythonService) {
@@ -759,12 +568,8 @@
     startLogStream();
 
     [
-      chatStatus,
       permStatus,
-      shellStatus,
       auditStatus,
-      hookStatus,
-      keyInlineStatus
     ].forEach(restoreInlineStatus);
     restorePythonStatus();
   </script>

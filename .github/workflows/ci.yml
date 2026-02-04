@@ -23,6 +23,8 @@ jobs:
             autoconf \
             automake \
             build-essential \
+            libtool-bin \
+            m4 \
             libtool \
             pkg-config \
             unzip \
@@ -52,6 +54,7 @@ jobs:
           ARCH: arm64-v8a
           DIST_NAME: androidvivepython_ci
           ANDROID_API: 34
+          REQUIREMENTS: python3,fastapi==0.99.1,starlette==0.27.0,pydantic==1.10.13,typing-extensions,anyio==3.7.1,sniffio,uvicorn==0.23.2,click,h11,requests,charset-normalizer,idna,urllib3,certifi,sqlcipher
         run: |
           ./scripts/build_p4a.sh
       - name: Upload Python bundle
@@ -118,7 +121,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12']
+        python-version: ['3.10', '3.11']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

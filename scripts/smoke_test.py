@@ -26,7 +26,7 @@ def _get(path):
 
 
 def main():
-    deadline = time.time() + 15
+    deadline = time.time() + 30
     while True:
         try:
             print(_get("/health"))

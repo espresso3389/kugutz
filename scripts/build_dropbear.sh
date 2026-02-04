@@ -5,6 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ASSETS_DIR="$ROOT_DIR/app/android/app/src/main/assets/bin"
 JNI_DIR="$ROOT_DIR/app/android/app/src/main/jniLibs"
 WORK_DIR="$ROOT_DIR/.dropbear-build"
+SRC_DIR="$WORK_DIR/src"
 
 if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
   if [[ -n "${ANDROID_SDK_ROOT:-}" && -d "$ANDROID_SDK_ROOT/ndk" ]]; then
@@ -35,12 +36,12 @@ if [[ ! -f dropbear.tar.bz2 ]]; then
   echo "$TARBALL" > dropbear.version
 fi
 
-if [[ ! -d dropbear-src ]]; then
-  mkdir -p dropbear-src
-  tar -xjf dropbear.tar.bz2 -C dropbear-src --strip-components=1
+if [[ ! -d "$SRC_DIR" ]]; then
+  mkdir -p "$SRC_DIR"
+  tar -xjf dropbear.tar.bz2 -C "$SRC_DIR" --strip-components=1
   if command -v git >/dev/null 2>&1; then
-    pushd dropbear-src >/dev/null
-    # It's not a git repo, but initializing one makes it easier to manage local patches
+    pushd "$SRC_DIR" >/dev/null
+    # Keep an "orig" snapshot for patch generation.
     git init -q
     git add -A
     git commit -q -m "orig"
@@ -56,7 +57,8 @@ fi
 
 write_localoptions() {
   cat > localoptions.h <<'OPT'
-#define DROPBEAR_SVR_PASSWORD_AUTH 0
+#define DROPBEAR_SVR_PASSWORD_AUTH 1
+#define DROPBEAR_SVR_PASSWORD_AUTH_PIN_ONLY 1
 #define DROPBEAR_SVR_PAM_AUTH 0
 #define DROPBEAR_SVR_PUBKEY_AUTH 1
 #define DROPBEAR_SVR_MULTIUSER 1
@@ -72,17 +74,33 @@ build_one() {
   local out_dir="$ASSETS_DIR/$abi"
   local jni_out="$JNI_DIR/$abi"
   local build_dir="$WORK_DIR/build-$abi"
+  local use_patch=1
 
   rm -rf "$build_dir"
   mkdir -p "$build_dir"
-  cp -R dropbear-src/* "$build_dir/"
-  pushd "$build_dir" >/dev/null
-  if [[ -f "$ROOT_DIR/scripts/dropbear.patch" ]]; then
-    patch -p1 < "$ROOT_DIR/scripts/dropbear.patch"
+  if git -C "$SRC_DIR" rev-parse orig >/dev/null 2>&1 \
+    && git -C "$SRC_DIR" diff --quiet orig..HEAD \
+    && git -C "$SRC_DIR" diff --quiet \
+    && [[ -z "$(git -C "$SRC_DIR" status --porcelain)" ]]; then
+    echo "Using clean source + patch for $abi build"
+    use_patch=1
   else
-    echo "Missing scripts/dropbear.patch; cannot patch dropbear sources" >&2
-    exit 1
+    echo "Using modified working copy for $abi build (skip patch)"
+    use_patch=0
   fi
+
+  cp -R "$SRC_DIR"/. "$build_dir/"
+
+  if [[ "$use_patch" == "1" ]]; then
+    if [[ -f "$ROOT_DIR/scripts/dropbear.patch" ]]; then
+      (cd "$build_dir" && patch -p1 < "$ROOT_DIR/scripts/dropbear.patch")
+    else
+      echo "Missing scripts/dropbear.patch; cannot patch dropbear sources" >&2
+      exit 1
+    fi
+  fi
+
+  pushd "$build_dir" >/dev/null
 
   export CC="$TOOLCHAIN/bin/${triple}${API_LEVEL}-clang"
   export AR="$TOOLCHAIN/bin/llvm-ar"

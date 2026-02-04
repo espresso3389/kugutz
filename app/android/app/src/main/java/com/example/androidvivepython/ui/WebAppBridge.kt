@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.webkit.JavascriptInterface
 import android.util.Log
+import androidx.appcompat.app.AlertDialog
 import jp.espresso3389.kugutz.perm.PermissionBroker
 import java.net.HttpURLConnection
 import java.net.URL
@@ -125,6 +126,73 @@ class WebAppBridge(private val activity: Activity) {
                 }.start()
             }
         }
+    }
+
+    @JavascriptInterface
+    fun allowSshPinAuth(seconds: Int) {
+        handler.post {
+            val duration = if (seconds > 0) seconds else 30
+            val detail = "Allow PIN SSH login (${duration}s)"
+            Log.d(tag, "allowSshPinAuth seconds=$duration")
+            broker.requestConsent("ssh_pin", detail) { approved ->
+                Log.d(tag, "allowSshPinAuth consent approved=$approved")
+                if (!approved) {
+                    if (activity is MainActivity) {
+                        activity.notifyPinResult(false, null)
+                    }
+                    return@requestConsent
+                }
+                val pin = String.format("%06d", (0..999999).random())
+                Thread {
+                    try {
+                        val payload = JSONObject()
+                            .put("seconds", duration)
+                            .put("pin", pin)
+                            .put("ui_consent", true)
+                        val response = postJson(
+                            "http://127.0.0.1:8765/ssh/pin/allow",
+                            payload.toString()
+                        )
+                        val expiresAt = try {
+                            JSONObject(response).optLong("expires_at", 0L)
+                        } catch (_: Exception) {
+                            0L
+                        }
+                        handler.post {
+                            showPinDialog(pin)
+                        }
+                        if (activity is MainActivity) {
+                            activity.notifyPinResult(true, if (expiresAt > 0) expiresAt else null)
+                        }
+                    } catch (ex: Exception) {
+                        Log.e(tag, "allowSshPinAuth request failed", ex)
+                        if (activity is MainActivity) {
+                            activity.notifyPinResult(false, null)
+                        }
+                    }
+                }.start()
+            }
+        }
+    }
+
+    private fun showPinDialog(pin: String) {
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle("SSH PIN (valid briefly)")
+            .setMessage("PIN: $pin")
+            .setPositiveButton("Close") { _, _ -> }
+            .setCancelable(true)
+            .create()
+        dialog.setOnDismissListener {
+            Thread {
+                try {
+                    val payload = JSONObject().put("ui_consent", true)
+                    postJson("http://127.0.0.1:8765/ssh/pin/clear", payload.toString())
+                } catch (_: Exception) {
+                    // ignore
+                }
+            }.start()
+        }
+        dialog.show()
     }
 
     @JavascriptInterface

@@ -45,6 +45,7 @@ ssh_dir = data_dir / "ssh"
 ssh_dir.mkdir(parents=True, exist_ok=True)
 ssh_home_dir = data_dir
 ssh_noauth_file = ssh_dir / "noauth_until"
+ssh_pin_file = ssh_dir / "pin_auth"
 
 _PROGRAMS: Dict[str, Dict] = {}
 _PROGRAM_LOCK = threading.Lock()
@@ -424,6 +425,24 @@ def _allow_noauth(seconds: int = 10) -> Dict:
     return {"expires_at": expires_at}
 
 
+def _allow_pin(pin: str, seconds: int = 10) -> Dict:
+    expires_at = int(time.time()) + max(1, seconds)
+    try:
+        ssh_pin_file.write_text(f"{expires_at} {pin}", encoding="utf-8")
+        os.chmod(ssh_pin_file, 0o600)
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"pin_write_failed: {ex}")
+    return {"expires_at": expires_at}
+
+
+def _clear_pin() -> None:
+    try:
+        if ssh_pin_file.exists():
+            ssh_pin_file.unlink()
+    except Exception:
+        pass
+
+
 def _noauth_expires() -> Optional[int]:
     try:
         if not ssh_noauth_file.exists():
@@ -432,6 +451,26 @@ def _noauth_expires() -> Optional[int]:
         if not raw:
             return None
         expires = int(raw)
+        if expires <= 0:
+            return None
+        if time.time() > expires:
+            return None
+        return expires
+    except Exception:
+        return None
+
+
+def _pin_expires() -> Optional[int]:
+    try:
+        if not ssh_pin_file.exists():
+            return None
+        raw = ssh_pin_file.read_text(encoding="utf-8").strip()
+        if not raw:
+            return None
+        parts = raw.split()
+        if not parts:
+            return None
+        expires = int(parts[0])
         if expires <= 0:
             return None
         if time.time() > expires:
@@ -492,27 +531,30 @@ def _set_setting_int(key: str, value: int) -> None:
 def _write_authorized_keys():
     keys = storage.list_active_ssh_keys()
     lines = [row["key"] for row in keys]
-    content = "\n".join(lines) + ("\n" if lines else "")
     key_path = _ssh_key_path()
     try:
         key_path.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
+    if not lines and key_path.exists():
+        try:
+            existing = key_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            existing = ""
+        if existing:
+            try:
+                os.chmod(ssh_dir, 0o700)
+                os.chmod(key_path.parent, 0o700)
+                os.chmod(key_path, 0o600)
+            except Exception:
+                pass
+            return
+    content = "\n".join(lines) + ("\n" if lines else "")
     key_path.write_text(content, encoding="utf-8")
     try:
         os.chmod(ssh_dir, 0o700)
         os.chmod(key_path.parent, 0o700)
         os.chmod(key_path, 0o600)
-    except Exception:
-        pass
-    # Backward-compatible copy under the legacy ssh dir.
-    ssh_subdir = ssh_dir / ".ssh"
-    try:
-        ssh_subdir.mkdir(parents=True, exist_ok=True)
-        os.chmod(ssh_subdir, 0o700)
-        alt_path = ssh_subdir / "authorized_keys"
-        alt_path.write_text(content, encoding="utf-8")
-        os.chmod(alt_path, 0o600)
     except Exception:
         pass
 
@@ -567,6 +609,7 @@ def _start_dropbear(port: int, log_event: bool = True) -> Dict:
         env["HOME"] = str(ssh_home_dir)
         env["PWD"] = str(ssh_work_dir)
         env["DROPBEAR_NOAUTH_FILE"] = str(ssh_noauth_file)
+        env["DROPBEAR_PIN_FILE"] = str(ssh_pin_file)
         log_path = ssh_dir / "dropbear.log"
 
         log_fh = open(log_path, "a", encoding="utf-8")
@@ -577,7 +620,7 @@ def _start_dropbear(port: int, log_event: bool = True) -> Dict:
             "-p",
             str(port),
             "-D",
-            str(ssh_dir),
+            str(ssh_home_dir / ".ssh"),
             "-r",
             str(host_keys["rsa"]),
             "-r",
@@ -705,6 +748,40 @@ async def ssh_noauth_allow(payload: Dict):
     return {"status": "ok", **result}
 
 
+@app.post("/ssh/pin/allow")
+async def ssh_pin_allow(payload: Dict):
+    permission_id = payload.get("permission_id")
+    ui_consent = payload.get("ui_consent") is True
+    if not ui_consent:
+        _require_permission("ssh_pin", permission_id)
+    pin = (payload.get("pin") or "").strip()
+    if not pin or not pin.isdigit() or len(pin) != 6:
+        raise HTTPException(status_code=400, detail="invalid_pin")
+    seconds = payload.get("seconds")
+    try:
+        seconds = int(seconds) if seconds is not None else 30
+    except Exception:
+        seconds = 30
+    if seconds <= 0:
+        raise HTTPException(status_code=400, detail="invalid_seconds")
+    if not _dropbear_running():
+        _start_dropbear(_SSH_PORT if _SSH_PORT else _get_setting_int("ssh_port", 2222))
+    result = _allow_pin(pin, seconds)
+    await _log("ssh_pin_allowed", {"expires_at": result["expires_at"], "seconds": seconds})
+    return {"status": "ok", **result}
+
+
+@app.post("/ssh/pin/clear")
+async def ssh_pin_clear(payload: Dict):
+    permission_id = payload.get("permission_id")
+    ui_consent = payload.get("ui_consent") is True
+    if not ui_consent:
+        _require_permission("ssh_pin", permission_id)
+    _clear_pin()
+    await _log("ssh_pin_cleared", {})
+    return {"status": "ok"}
+
+
 @app.get("/ssh/status")
 async def ssh_status():
     port = _SSH_PORT if _SSH_PORT else _get_setting_int("ssh_port", 2222)
@@ -715,6 +792,7 @@ async def ssh_status():
         "enabled": _get_setting_bool("ssh_enabled", True),
         "username": _ssh_username(),
         "noauth_until": _noauth_expires(),
+        "pin_until": _pin_expires(),
         "last_error": _SSH_LAST_ERROR,
         "last_error_ts": _SSH_LAST_ERROR_TS,
     }

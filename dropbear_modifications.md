@@ -56,10 +56,19 @@ Below is a concise explanation of what we change and why.
    - **How it works:**
      - The app writes a short-lived expiry timestamp to a file (seconds since epoch).
      - Dropbear checks `DROPBEAR_NOAUTH_FILE` on each `none` auth request.
-     - Optionally restricts the allowed SSH username via `DROPBEAR_NOAUTH_USER`.
-   - **Impact:** No-auth login is allowed only within the configured window (default 10s), and only for the configured username.
+   - **Impact:** No-auth login is allowed only within the configured window (default 10s).
 
-6) **Disable agent forwarding**
+8) **Time-limited PIN SSH (biometric grant)**
+   - **Files patched:** `src/svr-authpasswd.c`
+   - **Why:** Allow `ssh-copy-id` or other password-based tools to work for a short, user-approved window.
+   - **How it works:**
+     - The app writes a short-lived file `DROPBEAR_PIN_FILE` containing `"<expires_epoch> <pin>"`.
+     - Dropbear compares the supplied password to the PIN if still valid.
+     - The PIN file is deleted after a successful login (single use).
+     - Password auth is compiled in a **PIN-only** mode to avoid `crypt()` on Android.
+   - **Impact:** Password auth is accepted only with the correct PIN during the active window.
+
+9) **Disable agent forwarding**
    - **Files patched:** `localoptions.h`
    - **Why:** Reduces attack surface and avoids features that depend on broader OS integration.
 
@@ -81,15 +90,21 @@ The build script:
 
 When you need to change Dropbear modifications, generate a fresh patch file from a clean source tree. This keeps the build script simple and the patch reviewable.
 
-Recommended flow (use the same tarball source the build script uses; no extra temp tree needed):
-1. Extract the Dropbear source from the tarball (same source as the build script uses), for example in `.dropbear-build/dropbear-src`.
-2. Initialize a git baseline:
+Recommended flow (single working tree):
+1. Use `.dropbear-build/dropbear-src.patched` as the only working tree (the build script uses it too).
+2. Initialize a git baseline there:
    - `git init`
    - `git add .`
    - `git commit -m "orig"`
-3. Apply your edits to the source tree.
+3. Apply your edits in `.dropbear-build/dropbear-src.patched`.
 4. Generate the patch:
-   - `git diff --patch > /home/kawasaki/work/kugut/scripts/dropbear.patch`
+   - `git -C .dropbear-build/dropbear-src.patched diff --patch > /home/kawasaki/work/kugut/scripts/dropbear.patch`
+5. Reset the working tree back to the baseline so builds use clean+patch:
+   - `git -C .dropbear-build/dropbear-src.patched reset --hard orig`
+   - `git -C .dropbear-build/dropbear-src.patched clean -fd`
+
+Shortcut:
+- `scripts/finalize_dropbear_patch.sh` (generates the patch, then resets and cleans)
 
 After that, the build script will apply the patch automatically during builds.
 

@@ -5,3 +5,5 @@
 pyenv/
 .cxx/
 app/android/app/build/
+app/android/app/src/main/assets/bin/
+.dropbear-build/

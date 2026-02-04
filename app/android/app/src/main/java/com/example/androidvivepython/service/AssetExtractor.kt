@@ -29,12 +29,40 @@ class AssetExtractor(private val context: Context) {
         }
     }
 
+    fun extractDropbearIfMissing(): File? {
+        return try {
+            val targetDir = File(context.filesDir, "bin")
+            targetDir.mkdirs()
+            val outFile = File(targetDir, "dropbear")
+            if (outFile.exists()) {
+                return outFile
+            }
+            val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
+            val assetPath = "bin/$abi/dropbear"
+            if (!assetExists(assetPath)) {
+                Log.w(TAG, "Dropbear binary not found in assets for ABI $abi")
+                return null
+            }
+            copyAssetFile(assetPath, outFile)
+            outFile.setExecutable(true, true)
+            outFile
+        } catch (ex: Exception) {
+            Log.e(TAG, "Failed to extract Dropbear binary", ex)
+            null
+        }
+    }
+
     fun extractUiAssetsIfMissing(): File? {
         return try {
             val targetDir = File(context.filesDir, "www")
             if (targetDir.exists()) {
                 val entries = targetDir.list()
                 if (entries != null && entries.isNotEmpty()) {
+                    val localVersion = File(targetDir, ".version").takeIf { it.exists() }?.readText()?.trim()
+                    val assetVersion = readAssetText("www/.version")
+                    if (assetVersion != null && assetVersion.isNotBlank() && assetVersion != localVersion) {
+                        return resetUiAssets()
+                    }
                     return targetDir
                 }
             }
@@ -115,6 +143,23 @@ class AssetExtractor(private val context: Context) {
             outFile.outputStream().use { output ->
                 input.copyTo(output)
             }
+        }
+    }
+
+    private fun assetExists(assetPath: String): Boolean {
+        return try {
+            context.assets.open(assetPath).close()
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun readAssetText(assetPath: String): String? {
+        return try {
+            context.assets.open(assetPath).bufferedReader().use { it.readText() }
+        } catch (_: Exception) {
+            null
         }
     }
 

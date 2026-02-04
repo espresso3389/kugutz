@@ -15,6 +15,7 @@ import jp.espresso3389.kugutz.ui.MainActivity
 
 class PermissionBroker(private val context: Context) {
     fun requestConsent(tool: String, detail: String, onResult: (Boolean) -> Unit) {
+        android.util.Log.d("KugutzPerm", "requestConsent tool=$tool detail=$detail")
         postNotification(tool, detail)
         if (tool == "credentials" && context is FragmentActivity) {
             val manager = BiometricManager.from(context)
@@ -65,7 +66,7 @@ class PermissionBroker(private val context: Context) {
             .show()
     }
 
-    private fun postNotification(tool: String, detail: String) {
+    fun postNotification(tool: String, detail: String) {
         val channelId = "permission_requests"
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {

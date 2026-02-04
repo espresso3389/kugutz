@@ -25,6 +25,31 @@
       padding: 16px 20px;
       border-bottom: 1px solid var(--border);
       background: linear-gradient(90deg, #f7efe1, #f2e6d1);
+      position: sticky;
+      top: 0;
+      z-index: 3;
+    }
+    .banner {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 16px;
+      background: #fff2cc;
+      color: #6d4c41;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 56px;
+      z-index: 2;
+    }
+    .banner.show { display: flex; }
+    .banner button {
+      background: transparent;
+      border: 1px solid #c9b37a;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
     }
     .wrap {
       display: grid;
@@ -136,6 +161,13 @@
       margin-top: 8px;
       flex-wrap: wrap;
     }
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--ink);
+    }
     .toast {
       position: fixed;
       left: 50%;
@@ -164,6 +196,10 @@
   <header>
     <h1>Kugutz</h1>
   </header>
+  <div class="banner" id="permBanner">
+    <div id="permBannerText">Permission requests pending</div>
+    <button id="permBannerBtn">View</button>
+  </div>
   <div class="wrap">
     <div class="panel">
       <strong>Status</strong>
@@ -183,6 +219,19 @@
       <div class="muted">Reset replaces local UI files with defaults. Local changes will be lost.</div>
       <div class="row-actions">
         <button class="btn secondary" id="resetUi">Reset UI to Defaults</button>
+      </div>
+    </div>
+    <div class="panel">
+      <strong>SSH</strong>
+      <div class="muted" id="sshStatusText">Status: unknown</div>
+      <div class="muted" id="sshAddressText">Address: (pending)</div>
+      <div class="muted" id="sshUserText">Username: (pending)</div>
+      <div class="muted" id="sshCommandText">Command: (pending)</div>
+      <div class="row-actions">
+        <label class="toggle">
+          <input type="checkbox" id="sshEnabled" checked />
+          <span>Enable SSHD</span>
+        </label>
       </div>
     </div>
 
@@ -216,6 +265,11 @@
     const restartPython = document.getElementById("restartPython");
     const stopPython = document.getElementById("stopPython");
     const resetUi = document.getElementById("resetUi");
+    const sshStatusText = document.getElementById("sshStatusText");
+    const sshAddressText = document.getElementById("sshAddressText");
+    const sshUserText = document.getElementById("sshUserText");
+    const sshCommandText = document.getElementById("sshCommandText");
+    const sshEnabled = document.getElementById("sshEnabled");
     const permStatus = document.getElementById("permStatus");
     const auditStatus = document.getElementById("auditStatus");
     const sessionEl = document.getElementById("session");
@@ -224,10 +278,14 @@
     const auditList = document.getElementById("auditList");
     const permScope = document.getElementById("permScope");
     const permDuration = document.getElementById("permDuration");
+    const permBanner = document.getElementById("permBanner");
+    const permBannerText = document.getElementById("permBannerText");
+    const permBannerBtn = document.getElementById("permBannerBtn");
 
     let restartPending = false;
     let restartPendingTimer = null;
     let sessionId = null;
+    let sshToggleBusy = false;
 
     function appendLog(line) {
       if (logStream.textContent === "(no logs yet)") logStream.textContent = "";
@@ -371,6 +429,43 @@
       setTimeout(() => toast.classList.remove("show"), 2000);
     }
 
+    function getDeviceIp() {
+      if (typeof AndroidBridge !== "undefined" && AndroidBridge.getWifiIp) {
+        const ip = AndroidBridge.getWifiIp();
+        if (ip) return ip;
+      }
+      return "<device-ip>";
+    }
+
+    async function refreshSshStatus() {
+      try {
+        const res = await fetch("http://127.0.0.1:8765/ssh/status");
+        const data = await res.json();
+        const running = data.running ? "running" : "stopped";
+        const port = data.port || 2222;
+        const user = data.username || "user";
+        const ip = getDeviceIp();
+        sshStatusText.textContent = `Status: ${running}`;
+        sshAddressText.textContent = `Address: ${ip}:${port}`;
+        sshUserText.textContent = `Username: ${user}`;
+        sshCommandText.textContent = `Command: ssh ${user}@${ip} -p ${port}`;
+        if (sshEnabled) {
+          sshToggleBusy = true;
+          sshEnabled.checked = !!data.enabled;
+          sshEnabled.disabled = false;
+          sshToggleBusy = false;
+        }
+      } catch (_) {
+        sshStatusText.textContent = "Status: offline";
+        sshAddressText.textContent = "Address: (unavailable)";
+        sshUserText.textContent = "Username: (unavailable)";
+        sshCommandText.textContent = "Command: (unavailable)";
+        if (sshEnabled) {
+          sshEnabled.disabled = false;
+        }
+      }
+    }
+
     let uiVersion = null;
     async function pollUiVersion() {
       try {
@@ -456,6 +551,16 @@
         return;
       }
       permList.innerHTML = "";
+      const pendingCount = data.pending.length;
+      if (pendingCount > 0) {
+        permBanner.classList.add("show");
+        permBannerText.textContent = `${pendingCount} permission request${pendingCount === 1 ? "" : "s"} pending`;
+        if (typeof AndroidBridge !== "undefined" && AndroidBridge.notifyPermissionPending) {
+          AndroidBridge.notifyPermissionPending(`${pendingCount} pending request${pendingCount === 1 ? "" : "s"}`);
+        }
+      } else {
+        permBanner.classList.remove("show");
+      }
       if (!data.pending.length) {
         const li = document.createElement("li");
         li.textContent = "(none)";
@@ -586,8 +691,37 @@
         AndroidBridge.resetUiToDefaults();
         showToast("UI reset requested");
         appendLog("[ui] reset requested");
+        setTimeout(() => window.location.reload(), 1500);
       } else {
         showToast("Reset unavailable");
+      }
+    });
+
+    sshEnabled.addEventListener("change", async () => {
+      if (sshToggleBusy) return;
+      const enabled = sshEnabled.checked;
+      sshToggleBusy = true;
+      sshEnabled.disabled = true;
+      try {
+        await fetch("http://127.0.0.1:8765/ssh/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled, ui_consent: true })
+        });
+        await refreshSshStatus();
+        showToast(enabled ? "SSHD enabled" : "SSHD disabled");
+      } catch (_) {
+        showToast("Failed to update SSHD");
+      } finally {
+        sshEnabled.disabled = false;
+        sshToggleBusy = false;
+      }
+    });
+
+    permBannerBtn.addEventListener("click", () => {
+      const permPanel = permList.closest(".panel");
+      if (permPanel) {
+        permPanel.scrollIntoView({ behavior: "smooth", block: "start" });
       }
     });
 
@@ -595,8 +729,10 @@
     setInterval(refreshPermissions, 3000);
     setInterval(refreshAudit, 4000);
     setInterval(pollUiVersion, 3000);
+    setInterval(refreshSshStatus, 5000);
     ping();
     pollUiVersion();
+    refreshSshStatus();
     ensureSession();
     refreshPermissions();
     refreshAudit();

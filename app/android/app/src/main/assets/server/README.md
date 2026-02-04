@@ -5,6 +5,24 @@ This is a minimal local HTTP server intended to run on-device.
 ## Endpoints (stub)
 - GET /health
 - GET /ui/version
+- POST /ssh/start
+- POST /ssh/stop
+- GET /ssh/status
+- POST /ssh/keys
+- GET /ssh/keys
+- DELETE /ssh/keys/{fingerprint}
+
+## Dropbear Binary
+Bundled per-ABI at:
+  app/android/app/src/main/assets/bin/<abi>/dropbear
+  app/android/app/src/main/jniLibs/<abi>/libdropbear.so
+
+At runtime it is extracted to:
+  files/bin/dropbear
+
+The server prefers the native library copy (DROPBEAR_BIN) so it can
+execute under Android SELinux restrictions. Use:
+  scripts/build_dropbear.sh
 - POST /tools/{tool}/invoke
 - POST /permissions/request
 - GET /permissions/pending

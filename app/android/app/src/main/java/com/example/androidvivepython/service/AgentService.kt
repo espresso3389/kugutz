@@ -15,7 +15,9 @@ class AgentService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        AssetExtractor(this).extractUiAssetsIfMissing()
+        val extractor = AssetExtractor(this)
+        extractor.extractUiAssetsIfMissing()
+        extractor.extractDropbearIfMissing()
         runtimeManager = PythonRuntimeManager(this)
         vaultServer = KeystoreVaultServer(this).apply { start() }
         startForeground(NOTIFICATION_ID, buildNotification())

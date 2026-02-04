@@ -14,6 +14,9 @@ import threading
 import signal
 import secrets
 import socket
+import hashlib
+import base64
+import getpass
 from typing import Dict
 from pathlib import Path
 
@@ -38,10 +41,13 @@ program_dir.mkdir(parents=True, exist_ok=True)
 content_dir = Path(__file__).parent.parent / "www"
 content_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/ui", StaticFiles(directory=content_dir, html=True), name="ui")
+ssh_dir = data_dir / "ssh"
+ssh_dir.mkdir(parents=True, exist_ok=True)
 
 _PROGRAMS: Dict[str, Dict] = {}
 _PROGRAM_LOCK = threading.Lock()
 _UI_VERSION = 0
+_SSH_PORT = None
 
 
 def _now_ms() -> int:
@@ -372,6 +378,301 @@ def _require_permission(tool: str, permission_id: str) -> Dict:
     return request
 
 
+def _ssh_bin() -> Path:
+    env_path = os.environ.get("DROPBEAR_BIN")
+    if env_path:
+        return Path(env_path)
+    candidate = Path(__file__).parent.parent / "bin" / "dropbear"
+    return candidate
+
+
+def _ssh_keygen_bin() -> Path:
+    env_path = os.environ.get("DROPBEARKEY_BIN")
+    if env_path:
+        return Path(env_path)
+    candidate = Path(__file__).parent.parent / "bin" / "dropbearkey"
+    return candidate
+
+
+def _ssh_key_path() -> Path:
+    return ssh_dir / "authorized_keys"
+
+
+def _ssh_pid_path() -> Path:
+    return ssh_dir / "dropbear.pid"
+
+
+def _ssh_host_key_paths() -> Dict[str, Path]:
+    return {
+        "rsa": ssh_dir / "dropbear_rsa_host_key",
+        "ecdsa": ssh_dir / "dropbear_ecdsa_host_key",
+        "ed25519": ssh_dir / "dropbear_ed25519_host_key",
+    }
+
+
+def _ensure_host_keys() -> None:
+    keygen = _ssh_keygen_bin()
+    if not keygen.exists():
+        _emit_log("ssh_keygen_missing", {"path": str(keygen)})
+        return
+    for algo, path in _ssh_host_key_paths().items():
+        if path.exists():
+            continue
+        try:
+            subprocess.run(
+                [str(keygen), "-t", algo, "-f", str(path)],
+                cwd=str(ssh_dir),
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as ex:
+            _emit_log("ssh_keygen_failed", {"algo": algo, "error": str(ex)})
+
+
+def _ssh_fingerprint(key: str) -> str:
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
+
+def _get_setting_bool(key: str, default: bool) -> bool:
+    raw = storage.get_setting(key)
+    if raw is None:
+        storage.set_setting(key, "true" if default else "false")
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+def _get_setting_int(key: str, default: int) -> int:
+    raw = storage.get_setting(key)
+    if raw is None:
+        storage.set_setting(key, str(default))
+        return default
+    try:
+        return int(raw)
+    except Exception:
+        return default
+
+def _set_setting_bool(key: str, value: bool) -> None:
+    storage.set_setting(key, "true" if value else "false")
+
+def _set_setting_int(key: str, value: int) -> None:
+    storage.set_setting(key, str(value))
+
+
+def _write_authorized_keys():
+    keys = storage.list_active_ssh_keys()
+    lines = [row["key"] for row in keys]
+    content = "\n".join(lines) + ("\n" if lines else "")
+    key_path = _ssh_key_path()
+    key_path.write_text(content, encoding="utf-8")
+    try:
+        os.chmod(ssh_dir, 0o700)
+        os.chmod(key_path, 0o600)
+    except Exception:
+        pass
+    ssh_subdir = ssh_dir / ".ssh"
+    try:
+        ssh_subdir.mkdir(parents=True, exist_ok=True)
+        os.chmod(ssh_subdir, 0o700)
+        alt_path = ssh_subdir / "authorized_keys"
+        alt_path.write_text(content, encoding="utf-8")
+        os.chmod(alt_path, 0o600)
+    except Exception:
+        pass
+
+
+def _ssh_username() -> str:
+    try:
+        import pwd  # type: ignore
+
+        return pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        try:
+            return getpass.getuser()
+        except Exception:
+            return "user"
+
+
+def _dropbear_running() -> bool:
+    pid_path = _ssh_pid_path()
+    if not pid_path.exists():
+        return False
+    try:
+        pid = int(pid_path.read_text().strip())
+    except Exception:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+def _start_dropbear(port: int, log_event: bool = True) -> Dict:
+    bin_path = _ssh_bin()
+    if not bin_path.exists():
+        raise HTTPException(status_code=500, detail="dropbear_missing")
+    if _dropbear_running():
+        return {"status": "already_running"}
+    global _SSH_PORT
+    _SSH_PORT = port
+    _write_authorized_keys()
+    _ensure_host_keys()
+    host_keys = _ssh_host_key_paths()
+    pid_path = _ssh_pid_path()
+    env = dict(os.environ)
+    env["HOME"] = str(ssh_dir)
+    log_path = ssh_dir / "dropbear.log"
+    try:
+        log_fh = open(log_path, "a", encoding="utf-8")
+        args = [
+            str(bin_path),
+            "-F",
+            "-R",
+            "-p",
+            str(port),
+            "-D",
+            str(ssh_dir),
+            "-r",
+            str(host_keys["rsa"]),
+            "-r",
+            str(host_keys["ecdsa"]),
+            "-r",
+            str(host_keys["ed25519"]),
+            "-P",
+            str(pid_path),
+        ]
+        verbose_level = os.environ.get("DROPBEAR_VERBOSE", "").strip()
+        if verbose_level == "1":
+            args.append("-v")
+        elif verbose_level == "2":
+            args.extend(["-v", "-v"])
+        elif verbose_level == "3":
+            args.extend(["-v", "-v", "-v"])
+        proc = subprocess.Popen(
+            args,
+            cwd=str(ssh_dir),
+            env=env,
+            stdout=log_fh,
+            stderr=log_fh,
+        )
+    except Exception as ex:
+        _emit_log("ssh_start_failed", {"error": str(ex)})
+        raise HTTPException(status_code=500, detail=f"ssh_start_failed: {ex}")
+    if log_event:
+        asyncio.create_task(_log("ssh_started", {"port": port, "pid": proc.pid}))
+    return {"status": "started", "port": port, "pid": proc.pid}
+
+def _stop_dropbear(log_event: bool = True) -> Dict:
+    pid_path = _ssh_pid_path()
+    if not pid_path.exists():
+        return {"status": "not_running"}
+    try:
+        pid = int(pid_path.read_text().strip())
+    except Exception:
+        return {"status": "not_running"}
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
+        pass
+    if log_event:
+        asyncio.create_task(_log("ssh_stopped", {"pid": pid}))
+    return {"status": "stopping"}
+
+
+@app.post("/ssh/keys")
+async def ssh_add_key(payload: Dict):
+    permission_id = payload.get("permission_id")
+    _require_permission("ssh", permission_id)
+    key = (payload.get("key") or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing_key")
+    label = (payload.get("label") or "").strip() or None
+    ttl_min = payload.get("ttl_min")
+    expires_at = None
+    if ttl_min is not None:
+        try:
+            ttl_min = int(ttl_min)
+            if ttl_min > 0:
+                expires_at = _now_ms() + ttl_min * 60 * 1000
+        except Exception:
+            pass
+    fingerprint = _ssh_fingerprint(key)
+    storage.add_ssh_key(fingerprint, key, label, expires_at)
+    _write_authorized_keys()
+    await _log("ssh_key_added", {"fingerprint": fingerprint, "label": label})
+    return {"fingerprint": fingerprint, "expires_at": expires_at}
+
+
+@app.get("/ssh/keys")
+async def ssh_list_keys(permission_id: str):
+    _require_permission("ssh", permission_id)
+    return {"keys": storage.list_ssh_keys()}
+
+
+@app.delete("/ssh/keys/{fingerprint}")
+async def ssh_delete_key(fingerprint: str, permission_id: str):
+    _require_permission("ssh", permission_id)
+    storage.delete_ssh_key(fingerprint)
+    _write_authorized_keys()
+    await _log("ssh_key_deleted", {"fingerprint": fingerprint})
+    return {"status": "ok"}
+
+
+@app.post("/ssh/start")
+async def ssh_start(payload: Dict):
+    permission_id = payload.get("permission_id")
+    _require_permission("ssh", permission_id)
+    port = int(payload.get("port") or 2222)
+    return _start_dropbear(port)
+
+
+@app.post("/ssh/stop")
+async def ssh_stop(payload: Dict):
+    permission_id = payload.get("permission_id")
+    _require_permission("ssh", permission_id)
+    return _stop_dropbear()
+
+
+@app.get("/ssh/status")
+async def ssh_status():
+    port = _SSH_PORT if _SSH_PORT else _get_setting_int("ssh_port", 2222)
+    return {
+        "running": _dropbear_running(),
+        "host_key": {k: str(v) for k, v in _ssh_host_key_paths().items()},
+        "port": port,
+        "enabled": _get_setting_bool("ssh_enabled", True),
+        "username": _ssh_username(),
+    }
+
+
+@app.post("/ssh/config")
+async def ssh_config(payload: Dict):
+    permission_id = payload.get("permission_id")
+    ui_consent = payload.get("ui_consent") is True
+    if not ui_consent:
+        _require_permission("ssh", permission_id)
+    enabled = payload.get("enabled")
+    port = payload.get("port")
+    if isinstance(port, str) and port.strip().isdigit():
+        port = int(port.strip())
+    if isinstance(port, int) and port > 0:
+        _set_setting_int("ssh_port", port)
+        global _SSH_PORT
+        _SSH_PORT = port
+    if isinstance(enabled, bool):
+        _set_setting_bool("ssh_enabled", enabled)
+    if enabled is True:
+        result = _start_dropbear(_SSH_PORT)
+    elif enabled is False:
+        result = _stop_dropbear()
+    else:
+        result = {"status": "ok"}
+    return {
+        "enabled": _get_setting_bool("ssh_enabled", True),
+        "port": _SSH_PORT,
+        **result,
+    }
+
+
 @app.get("/vault/credentials")
 async def vault_list(permission_id: str):
     _require_permission("credentials", permission_id)
@@ -483,11 +784,22 @@ async def service_get_credential(name: str, credential: str, code_hash: str, tok
     await _log("service_credential_get", {"service": name, "credential": credential})
     return {"name": row.get("name"), "value": decrypted, "updated_at": row.get("updated_at")}
 
+def _init_ssh_settings():
+    global _SSH_PORT
+    _SSH_PORT = _get_setting_int("ssh_port", 2222)
+    enabled = _get_setting_bool("ssh_enabled", True)
+    if enabled:
+        try:
+            _start_dropbear(_SSH_PORT, log_event=False)
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
     import uvicorn
 
     _start_ui_watcher()
+    _init_ssh_settings()
     config = uvicorn.Config(
         app,
         host="127.0.0.1",

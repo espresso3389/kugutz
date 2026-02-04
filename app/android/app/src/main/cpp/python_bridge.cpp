@@ -139,7 +139,7 @@ Java_jp_espresso3389_kugutz_service_PythonBridge_start(
         jstring pythonHome,
         jstring serverDir,
         jstring keyFile,
-        jstring /* nativeLibDir */) {
+        jstring nativeLibDir) {
     if (!load_python_symbols()) {
         return -1;
     }
@@ -147,10 +147,12 @@ Java_jp_espresso3389_kugutz_service_PythonBridge_start(
     const char *python_home_c = env->GetStringUTFChars(pythonHome, nullptr);
     const char *server_dir_c = env->GetStringUTFChars(serverDir, nullptr);
     const char *key_file_c = keyFile ? env->GetStringUTFChars(keyFile, nullptr) : nullptr;
+    const char *native_lib_dir_c = nativeLibDir ? env->GetStringUTFChars(nativeLibDir, nullptr) : nullptr;
 
     std::string python_home(python_home_c ? python_home_c : "");
     std::string server_dir(server_dir_c ? server_dir_c : "");
     std::string key_file(key_file_c ? key_file_c : "");
+    std::string native_lib_dir(native_lib_dir_c ? native_lib_dir_c : "");
 
     if (python_home.empty() || server_dir.empty()) {
         LOGE("Python home or server dir is empty");
@@ -173,6 +175,13 @@ Java_jp_espresso3389_kugutz_service_PythonBridge_start(
 
     if (!key_file.empty()) {
         setenv("SQLCIPHER_KEY_FILE", key_file.c_str(), 1);
+    }
+    if (!native_lib_dir.empty()) {
+        std::string dropbear_bin = native_lib_dir + "/libdropbear.so";
+        std::string dropbearkey_bin = native_lib_dir + "/libdropbearkey.so";
+        setenv("DROPBEAR_BIN", dropbear_bin.c_str(), 1);
+        setenv("DROPBEARKEY_BIN", dropbearkey_bin.c_str(), 1);
+        setenv("DROPBEAR_VERBOSE", "3", 1);
     }
 
     std::wstring home_w = to_wide(python_home);
@@ -217,6 +226,9 @@ Java_jp_espresso3389_kugutz_service_PythonBridge_start(
 
     if (keyFile) {
         env->ReleaseStringUTFChars(keyFile, key_file_c);
+    }
+    if (nativeLibDir) {
+        env->ReleaseStringUTFChars(nativeLibDir, native_lib_dir_c);
     }
     env->ReleaseStringUTFChars(serverDir, server_dir_c);
     env->ReleaseStringUTFChars(pythonHome, python_home_c);

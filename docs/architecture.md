@@ -124,8 +124,9 @@
 - HTTP client (by python)
 - libusb/libvc for native USB access
 - TensorFlow Lite support
-- ssh server with busybox
+- ssh server (Dropbear)
 - ssh client
+  - Dropbear binaries are bundled per-ABI under assets/bin/<abi>/dropbear
 - Git/GitHub support (gh command?)
 
 ## Credential Vault (Service Access)

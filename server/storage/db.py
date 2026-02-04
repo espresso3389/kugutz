@@ -99,6 +99,26 @@ class Storage:
                 )
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ssh_keys (
+                    fingerprint TEXT PRIMARY KEY,
+                    key TEXT,
+                    label TEXT,
+                    expires_at INTEGER,
+                    created_at INTEGER
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at INTEGER
+                )
+                """
+            )
 
     def create_permission_request(self, tool: str, detail: str, scope: str, expires_at: int | None) -> str:
         request_id = f"p_{_now_ms()}"
@@ -148,6 +168,59 @@ class Storage:
                 (limit,),
             )
             return [dict(r) for r in cur.fetchall()]
+
+    def add_ssh_key(self, fingerprint: str, key: str, label: str | None, expires_at: int | None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO ssh_keys (fingerprint, key, label, expires_at, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(fingerprint) DO UPDATE SET
+                    key=excluded.key,
+                    label=excluded.label,
+                    expires_at=excluded.expires_at
+                """,
+                (fingerprint, key, label, expires_at, _now_ms()),
+            )
+
+    def delete_ssh_key(self, fingerprint: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM ssh_keys WHERE fingerprint = ?", (fingerprint,))
+
+    def list_ssh_keys(self) -> List[Dict]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT fingerprint, label, expires_at, created_at FROM ssh_keys ORDER BY created_at DESC"
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def list_active_ssh_keys(self) -> List[Dict]:
+        now = _now_ms()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT fingerprint, key, label, expires_at FROM ssh_keys WHERE expires_at IS NULL OR expires_at > ?",
+                (now,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_setting(self, key: str) -> Optional[str]:
+        with self._connect() as conn:
+            cur = conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            row = cur.fetchone()
+            return row["value"] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at
+                """,
+                (key, value, _now_ms()),
+            )
 
     def set_credential(self, name: str, value: str) -> None:
         with self._connect() as conn:

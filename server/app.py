@@ -541,24 +541,6 @@ def _ssh_fingerprint(key: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
 
-def _ssh_has_pubkeys() -> bool:
-    try:
-        return len(storage.list_active_ssh_keys()) > 0
-    except Exception:
-        return False
-
-
-def _ssh_pin_active() -> bool:
-    expires = _pin_expires()
-    if expires is None:
-        return False
-    return expires > int(time.time())
-
-
-def _ssh_allow_noauth() -> bool:
-    return not _ssh_has_pubkeys() and not _ssh_pin_active()
-
-
 def _restart_dropbear_if_running() -> None:
     if not _dropbear_running():
         return
@@ -672,11 +654,10 @@ def _start_dropbear(port: int, log_event: bool = True) -> Dict:
         env["HOME"] = str(ssh_home_dir)
         env["PWD"] = str(ssh_work_dir)
         env["DROPBEAR_PIN_FILE"] = str(ssh_pin_file)
-        if _ssh_allow_noauth():
-            env["DROPBEAR_NOAUTH_PROMPT_DIR"] = str(ssh_noauth_prompt_dir)
-            env["DROPBEAR_NOAUTH_PROMPT_TIMEOUT"] = str(
-                _get_setting_int("ssh_noauth_prompt_timeout", 10)
-            )
+        env["DROPBEAR_NOAUTH_PROMPT_DIR"] = str(ssh_noauth_prompt_dir)
+        env["DROPBEAR_NOAUTH_PROMPT_TIMEOUT"] = str(
+            _get_setting_int("ssh_noauth_prompt_timeout", 10)
+        )
         log_path = ssh_dir / "dropbear.log"
 
         log_fh = open(log_path, "a", encoding="utf-8", buffering=1)
@@ -808,8 +789,6 @@ async def ssh_noauth_respond(payload: Dict):
     ui_consent = payload.get("ui_consent") is True
     if not ui_consent:
         _require_permission("ssh_noauth", permission_id)
-    if not _ssh_allow_noauth():
-        raise HTTPException(status_code=409, detail="noauth_disabled_by_auth")
     req_id = (payload.get("id") or "").strip()
     if not req_id:
         raise HTTPException(status_code=400, detail="missing_id")

@@ -1,3 +1,16 @@
+diff --git a/src/auth.h b/src/auth.h
+index 5eb4690..ff06890 100644
+--- a/src/auth.h
++++ b/src/auth.h
+@@ -126,6 +126,8 @@ struct AuthState {
+ 	                                has already failed */
+ 	struct timespec auth_starttime; /* Server only, time of receiving current 
+ 									SSH_MSG_USERAUTH_REQUEST */
++	int app_approval_set;
++	int app_approved;
+ 
+ 	/* These are only used for the server */
+ 	uid_t pw_uid;
 diff --git a/src/loginrec.c b/src/loginrec.c
 index 3118bf6..14e6299 100644
 --- a/src/loginrec.c
@@ -110,10 +123,10 @@ index 9f12d67..fd69661 100644
  			}
  		}
 diff --git a/src/svr-auth.c b/src/svr-auth.c
-index de01458..ab4c9fb 100644
+index de01458..673ce3d 100644
 --- a/src/svr-auth.c
 +++ b/src/svr-auth.c
-@@ -38,6 +38,117 @@
+@@ -38,6 +38,112 @@
  
  static int checkusername(const char *username, unsigned int userlen);
  
@@ -177,26 +190,6 @@ index de01458..ab4c9fb 100644
 +	return allowed;
 +}
 +
-+static int noauth_allowed(const char *username) {
-+	const char *file = getenv("DROPBEAR_NOAUTH_FILE");
-+	long expires = 0;
-+	FILE *fp;
-+	if (file && file[0]) {
-+		fp = fopen(file, "r");
-+		if (fp) {
-+			if (fscanf(fp, "%ld", &expires) == 1) {
-+				fclose(fp);
-+				if (expires > 0 && time(NULL) <= (time_t)expires) {
-+					return 1;
-+				}
-+			} else {
-+				fclose(fp);
-+			}
-+		}
-+	}
-+	return noauth_prompt(username);
-+}
-+
 +static int pin_allowed(void) {
 +	const char *file = getenv("DROPBEAR_PIN_FILE");
 +	long expires = 0;
@@ -226,12 +219,27 @@ index de01458..ab4c9fb 100644
 +	}
 +	return time(NULL) <= (time_t)expires;
 +}
++
++static int app_approve(const char *username) {
++	if (ses.authstate.app_approval_set) {
++		return ses.authstate.app_approved;
++	}
++	ses.authstate.app_approval_set = 1;
++	ses.authstate.app_approved = noauth_prompt(username) ? 1 : 0;
++	if (!ses.authstate.app_approved) {
++		dropbear_log(LOG_NOTICE,
++				"Auth denied by app for '%s' from %s",
++				username ? username : "",
++				svr_ses.addrstring);
++	}
++	return ses.authstate.app_approved;
++}
 +#endif
 +
  /* initialise the first time for a session, resetting all parameters */
  void svr_authinitialise() {
  	memset(&ses.authstate, 0, sizeof(ses.authstate));
-@@ -46,7 +100,14 @@ void svr_authinitialise() {
+@@ -46,7 +152,14 @@ void svr_authinitialise() {
  #endif
  #if DROPBEAR_SVR_PASSWORD_AUTH || DROPBEAR_SVR_PAM_AUTH
  	if (!svr_opts.noauthpass) {
@@ -246,24 +254,7 @@ index de01458..ab4c9fb 100644
  	}
  #endif
  }
-@@ -123,6 +184,16 @@ void recv_msg_userauth_request() {
- 			strncmp(methodname, AUTH_METHOD_NONE,
- 				AUTH_METHOD_NONE_LEN) == 0) {
- 		TRACE(("recv_msg_userauth_request: 'none' request"))
-+#ifdef __ANDROID__
-+		if (valid_user && noauth_allowed(username)) {
-+			dropbear_log(LOG_NOTICE,
-+					"Auth succeeded with noauth grant for '%s' from %s",
-+					username,
-+					svr_ses.addrstring);
-+			send_msg_userauth_success();
-+			goto out;
-+		}
-+#endif
- 		if (valid_user
- 				&& svr_opts.allowblankpass
- 				&& !svr_opts.noauthpass
-@@ -151,6 +222,14 @@ void recv_msg_userauth_request() {
+@@ -151,6 +264,20 @@ void recv_msg_userauth_request() {
  		if (methodlen == AUTH_METHOD_PASSWORD_LEN &&
  				strncmp(methodname, AUTH_METHOD_PASSWORD,
  					AUTH_METHOD_PASSWORD_LEN) == 0) {
@@ -275,10 +266,16 @@ index de01458..ab4c9fb 100644
 +			}
 +			ses.authstate.authtypes |= AUTH_TYPE_PASSWORD;
 +#endif
++#ifdef __ANDROID__
++			if (valid_user && !app_approve(username)) {
++				send_msg_userauth_failure(0, 1);
++				goto out;
++			}
++#endif
  			svr_auth_password(valid_user);
  			goto out;
  		}
-@@ -175,6 +254,12 @@ void recv_msg_userauth_request() {
+@@ -175,6 +302,18 @@ void recv_msg_userauth_request() {
  	if (methodlen == AUTH_METHOD_PUBKEY_LEN &&
  			strncmp(methodname, AUTH_METHOD_PUBKEY,
  				AUTH_METHOD_PUBKEY_LEN) == 0) {
@@ -288,10 +285,16 @@ index de01458..ab4c9fb 100644
 +			goto out;
 +		}
 +#endif
++#ifdef __ANDROID__
++		if (valid_user && !app_approve(username)) {
++			send_msg_userauth_failure(0, 1);
++			goto out;
++		}
++#endif
  		svr_auth_pubkey(valid_user);
  		goto out;
  	}
-@@ -263,12 +348,19 @@ static int checkusername(const char *username, unsigned int userlen) {
+@@ -263,12 +402,19 @@ static int checkusername(const char *username, unsigned int userlen) {
  
  	/* check that user exists */
  	if (!ses.authstate.pw_name) {
@@ -316,21 +319,21 @@ index de01458..ab4c9fb 100644
  	}
  
  	/* check if we are running as non-root, and login user is different from the server */
-@@ -305,34 +397,9 @@ static int checkusername(const char *username, unsigned int userlen) {
+@@ -305,34 +451,9 @@ static int checkusername(const char *username, unsigned int userlen) {
  	}
  #endif /* HAVE_GETGROUPLIST */
  
 -	TRACE(("shell is %s", ses.authstate.pw_shell))
-+		TRACE(("shell is %s", ses.authstate.pw_shell))
-+	goto goodshell;
- 
+-
 -	/* check that the shell is set */
 -	usershell = ses.authstate.pw_shell;
 -	if (usershell[0] == '\0') {
 -		/* empty shell in /etc/passwd means /bin/sh according to passwd(5) */
 -		usershell = "/bin/sh";
 -	}
--
++		TRACE(("shell is %s", ses.authstate.pw_shell))
++	goto goodshell;
+ 
 -	/* check the shell is valid. If /etc/shells doesn't exist, getusershell()
 -	 * should return some standard shells like "/bin/sh" and "/bin/csh" (this
 -	 * is platform-specific) */

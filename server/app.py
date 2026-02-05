@@ -670,12 +670,12 @@ def _start_dropbear(port: int, log_event: bool = True) -> Dict:
         pid_path = _ssh_pid_path()
         env = dict(os.environ)
         ssh_work_dir = ssh_home_dir
-    env["HOME"] = str(ssh_home_dir)
-    env["PWD"] = str(ssh_work_dir)
-    env["DROPBEAR_NOAUTH_FILE"] = str(ssh_noauth_file)
-    env["DROPBEAR_PIN_FILE"] = str(ssh_pin_file)
-    env["DROPBEAR_NOAUTH_PROMPT_DIR"] = str(ssh_noauth_prompt_dir)
-    env["DROPBEAR_NOAUTH_PROMPT_TIMEOUT"] = str(_get_setting_int("ssh_noauth_prompt_timeout", 10))
+        env["HOME"] = str(ssh_home_dir)
+        env["PWD"] = str(ssh_work_dir)
+        env["DROPBEAR_NOAUTH_FILE"] = str(ssh_noauth_file)
+        env["DROPBEAR_PIN_FILE"] = str(ssh_pin_file)
+        env["DROPBEAR_NOAUTH_PROMPT_DIR"] = str(ssh_noauth_prompt_dir)
+        env["DROPBEAR_NOAUTH_PROMPT_TIMEOUT"] = str(_get_setting_int("ssh_noauth_prompt_timeout", 10))
         log_path = ssh_dir / "dropbear.log"
 
         log_fh = open(log_path, "a", encoding="utf-8", buffering=1)

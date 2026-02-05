@@ -98,6 +98,11 @@ if legacy_secrets_dir.exists():
                 shutil.move(str(legacy_key), str(dest))
             except Exception:
                 pass
+    try:
+        if not any(legacy_secrets_dir.iterdir()):
+            legacy_secrets_dir.rmdir()
+    except Exception:
+        pass
 
 _PROGRAMS: Dict[str, Dict] = {}
 _PROGRAM_LOCK = threading.Lock()

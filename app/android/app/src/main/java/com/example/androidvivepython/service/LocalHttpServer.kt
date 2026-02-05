@@ -183,25 +183,45 @@ class LocalHttpServer(
                 val name = payload.optString("name", "")
                 val value = payload.optString("value", "")
                 val permissionId = payload.optString("permission_id", "")
+                if (permissionId.isBlank()) {
+                    return jsonError(Response.Status.BAD_REQUEST, "permission_id_required")
+                }
                 if (!isPermissionApproved(permissionId, consume = false)) {
-                    return forbidden("permission_required")
+                    return jsonError(Response.Status.FORBIDDEN, "permission_required")
                 }
-                if (name.isBlank()) {
-                    return badRequest("name_required")
+                val nameTrimmed = name.trim()
+                if (nameTrimmed.isBlank()) {
+                    return jsonError(Response.Status.BAD_REQUEST, "name_required")
                 }
-                credentialStore.set(name, value)
-                jsonResponse(JSONObject().put("status", "ok"))
+                if (nameTrimmed.length > 128) {
+                    return jsonError(Response.Status.BAD_REQUEST, "name_too_long")
+                }
+                if (value.length > 8192) {
+                    return jsonError(Response.Status.BAD_REQUEST, "value_too_long")
+                }
+                credentialStore.set(nameTrimmed, value)
+                jsonResponse(JSONObject().put("status", "ok").put("name", nameTrimmed))
             }
             uri == "/vault/credentials/get" && session.method == Method.POST -> {
                 val payload = JSONObject(readBody(session).ifBlank { "{}" })
                 val name = payload.optString("name", "")
                 val permissionId = payload.optString("permission_id", "")
-                if (!isPermissionApproved(permissionId, consume = false)) {
-                    return forbidden("permission_required")
+                if (permissionId.isBlank()) {
+                    return jsonError(Response.Status.BAD_REQUEST, "permission_id_required")
                 }
-                val row = if (name.isBlank()) null else credentialStore.get(name)
+                if (!isPermissionApproved(permissionId, consume = false)) {
+                    return jsonError(Response.Status.FORBIDDEN, "permission_required")
+                }
+                val nameTrimmed = name.trim()
+                if (nameTrimmed.isBlank()) {
+                    return jsonError(Response.Status.BAD_REQUEST, "name_required")
+                }
+                if (nameTrimmed.length > 128) {
+                    return jsonError(Response.Status.BAD_REQUEST, "name_too_long")
+                }
+                val row = credentialStore.get(nameTrimmed)
                 if (row == null) {
-                    return notFound()
+                    return jsonError(Response.Status.NOT_FOUND, "not_found")
                 }
                 jsonResponse(
                     JSONObject()
@@ -369,6 +389,13 @@ class LocalHttpServer(
 
     private fun jsonResponse(payload: JSONObject): Response {
         val response = newFixedLengthResponse(Response.Status.OK, "application/json", payload.toString())
+        response.addHeader("Cache-Control", "no-cache")
+        return response
+    }
+
+    private fun jsonError(status: Response.Status, code: String): Response {
+        val payload = JSONObject().put("error", code)
+        val response = newFixedLengthResponse(status, "application/json", payload.toString())
         response.addHeader("Cache-Control", "no-cache")
         return response
     }

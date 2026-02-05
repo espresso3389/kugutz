@@ -53,6 +53,7 @@ Build an Android 14+ app that provides a Python development environment with:
 - Maintain a per-session audit trail.
 - Provide granular toggles (e.g., read-only FS, no network, no shell).
 - Permissions/SSH keys use a plain Room DB; credentials are encrypted with Android Keystore (AES-GCM) and stored as ciphertext in the same DB.
+- Credential keys live in Android Keystore and are removed on app uninstall; vault data is not intended to be backed up.
 
 ## Background Execution
 - Background service runs local HTTP service and SSHD.

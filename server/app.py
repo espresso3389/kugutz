@@ -86,6 +86,18 @@ ssh_home_dir = user_dir
 ssh_pin_file = ssh_dir / "pin_auth"
 ssh_noauth_prompt_dir = ssh_dir / "noauth_prompts"
 ssh_noauth_prompt_dir.mkdir(parents=True, exist_ok=True)
+legacy_secrets_dir = base_dir / "secrets"
+protected_secrets_dir = protected_dir / "secrets"
+if legacy_secrets_dir.exists():
+    legacy_key = legacy_secrets_dir / "sqlcipher.key"
+    if legacy_key.exists():
+        protected_secrets_dir.mkdir(parents=True, exist_ok=True)
+        dest = protected_secrets_dir / "sqlcipher.key"
+        if not dest.exists():
+            try:
+                shutil.move(str(legacy_key), str(dest))
+            except Exception:
+                pass
 
 _PROGRAMS: Dict[str, Dict] = {}
 _PROGRAM_LOCK = threading.Lock()

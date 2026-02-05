@@ -270,9 +270,6 @@
           }
           authPublic.checked = lastAuthSelection === "public_key";
           authNotification.checked = lastAuthSelection === "notification";
-          const pinActive = mode === "pin";
-          authPublic.disabled = pinActive;
-          authNotification.disabled = pinActive;
           sshDetail.textContent = "ssh " + (data.host || "aaa.bbb.ccc.ddd") + " -p " + (data.port || 2222);
         } catch (_) {
           setStatus(sshStatus, "offline");

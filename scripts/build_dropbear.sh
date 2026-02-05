@@ -5,9 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ASSETS_DIR="$ROOT_DIR/app/android/app/src/main/assets/bin"
 JNI_DIR="$ROOT_DIR/app/android/app/src/main/jniLibs"
 WORK_DIR="$ROOT_DIR/.dropbear-build"
-SRC_DIR="$WORK_DIR/src"
-DROPBEAR_REPO=${DROPBEAR_REPO:-"https://github.com/espresso3389/dropbear.git"}
-DROPBEAR_REF=${DROPBEAR_REF:-"main"}
+SRC_DIR="$ROOT_DIR/third_party/dropbear"
 
 if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
   if [[ -n "${ANDROID_SDK_ROOT:-}" && -d "$ANDROID_SDK_ROOT/ndk" ]]; then
@@ -25,18 +23,11 @@ API_LEVEL=${DROPBEAR_ANDROID_API:-21}
 
 mkdir -p "$WORK_DIR"
 
-cd "$WORK_DIR"
-if [[ ! -d "$SRC_DIR/.git" ]]; then
-  echo "Cloning dropbear fork..."
-  rm -rf "$SRC_DIR"
-  git clone "$DROPBEAR_REPO" "$SRC_DIR"
+if [[ ! -d "$SRC_DIR" ]]; then
+  echo "Missing dropbear submodule at $SRC_DIR" >&2
+  echo "Run: git submodule update --init --recursive" >&2
+  exit 1
 fi
-
-pushd "$SRC_DIR" >/dev/null
-git fetch --tags --prune origin
-git checkout -q "$DROPBEAR_REF"
-git reset -q --hard "origin/${DROPBEAR_REF}"
-popd >/dev/null
 
 TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
 if [[ ! -d "$TOOLCHAIN" ]]; then
@@ -63,37 +54,20 @@ build_one() {
   local out_dir="$ASSETS_DIR/$abi"
   local jni_out="$JNI_DIR/$abi"
   local build_dir="$WORK_DIR/build-$abi"
-  local use_patch=1
   local base_commit=""
 
   rm -rf "$build_dir"
   mkdir -p "$build_dir"
   base_commit=$(git -C "$SRC_DIR" rev-list --max-parents=0 HEAD | tail -n 1)
   if [[ -n "$base_commit" ]] \
-    && git -C "$SRC_DIR" diff --quiet "${base_commit}..HEAD" \
     && git -C "$SRC_DIR" diff --quiet \
     && [[ -z "$(git -C "$SRC_DIR" status --porcelain)" ]]; then
-    echo "Using clean source + patch for $abi build"
-    use_patch=1
+    echo "Using clean submodule source for $abi build"
   else
-    echo "Using modified working copy for $abi build (skip patch)"
-    use_patch=0
+    echo "Using modified submodule source for $abi build"
   fi
 
   cp -R "$SRC_DIR"/. "$build_dir/"
-
-  if [[ "$use_patch" == "1" ]]; then
-    if [[ -f "$ROOT_DIR/scripts/dropbear.patch" ]]; then
-      if (cd "$build_dir" && patch -p1 --dry-run < "$ROOT_DIR/scripts/dropbear.patch" >/dev/null 2>&1); then
-        (cd "$build_dir" && patch -p1 < "$ROOT_DIR/scripts/dropbear.patch")
-      else
-        echo "Patch does not apply cleanly; skipping patch for $abi build"
-      fi
-    else
-      echo "Missing scripts/dropbear.patch; cannot patch dropbear sources" >&2
-      exit 1
-    fi
-  fi
 
   pushd "$build_dir" >/dev/null
 

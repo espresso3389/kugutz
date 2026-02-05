@@ -60,7 +60,7 @@ ssh_public_dir = base_dir / ".ssh"
 ssh_public_dir.mkdir(parents=True, exist_ok=True)
 ssh_dir = data_dir / "ssh"
 ssh_dir.mkdir(parents=True, exist_ok=True)
-ssh_home_dir = content_dir
+ssh_home_dir = base_dir
 ssh_pin_file = ssh_dir / "pin_auth"
 ssh_noauth_prompt_dir = ssh_dir / "noauth_prompts"
 ssh_noauth_prompt_dir.mkdir(parents=True, exist_ok=True)
@@ -674,7 +674,7 @@ def _start_dropbear(port: int, log_event: bool = True) -> Dict:
         host_keys = _ssh_host_key_paths()
         pid_path = _ssh_pid_path()
         env = dict(os.environ)
-        ssh_work_dir = content_dir
+        ssh_work_dir = ssh_home_dir
         env["HOME"] = str(ssh_work_dir)
         env["PWD"] = str(ssh_work_dir)
         env["DROPBEAR_PIN_FILE"] = str(ssh_pin_file)

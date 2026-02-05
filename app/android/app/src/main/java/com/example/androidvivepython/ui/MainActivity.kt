@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Bundle
 import android.graphics.Color
+import android.Manifest
+import android.content.pm.PackageManager
 import android.view.Gravity
 import android.widget.FrameLayout
 import android.widget.TextView
@@ -13,6 +15,7 @@ import android.widget.Toast
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.core.app.ActivityCompat
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AlertDialog
 import jp.espresso3389.kugutz.service.AgentService
@@ -38,6 +41,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         startForegroundService(Intent(this, AgentService::class.java))
+        ensureNotificationPermission()
 
         val root = FrameLayout(this)
         webView = WebView(this)
@@ -217,6 +221,20 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS_NAME = "python_status"
         private const val PREF_STATUS = "last_status"
         private const val PREF_STATUS_TS = "last_status_ts"
+    }
+
+    private fun ensureNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) {
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            1001
+        )
     }
 
     private fun formatRelativeTime(timestamp: Long): String {

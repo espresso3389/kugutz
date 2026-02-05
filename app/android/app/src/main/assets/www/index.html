@@ -226,10 +226,15 @@
       <div class="muted" id="sshStatusText">Status: unknown</div>
       <div class="muted" id="sshAddressText">Address: (pending)</div>
       <div class="muted" id="sshPinText">PIN: (inactive)</div>
+      <div class="muted" id="sshNotifyText">Notification auth: (unknown)</div>
       <div class="row-actions">
         <label class="toggle">
           <input type="checkbox" id="sshEnabled" checked />
           <span>Enable SSHD</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="sshNotifyEnabled" checked />
+          <span>Notification auth</span>
         </label>
         <button class="btn secondary" id="sshPin">Allow PIN (30s)</button>
       </div>
@@ -269,6 +274,8 @@
     const sshAddressText = document.getElementById("sshAddressText");
     const sshPinText = document.getElementById("sshPinText");
     const sshEnabled = document.getElementById("sshEnabled");
+    const sshNotifyText = document.getElementById("sshNotifyText");
+    const sshNotifyEnabled = document.getElementById("sshNotifyEnabled");
     const sshPin = document.getElementById("sshPin");
     const permStatus = document.getElementById("permStatus");
     const auditStatus = document.getElementById("auditStatus");
@@ -445,8 +452,12 @@
         const port = data.port || 2222;
         const ip = getDeviceIp();
         const pinUntil = data.pin_until || null;
+        const notifyEnabled = data.notify_enabled !== false;
         sshStatusText.textContent = `Status: ${running}`;
         sshAddressText.textContent = `Address: ${ip}:${port}`;
+        sshNotifyText.textContent = notifyEnabled
+          ? "Notification auth: enabled"
+          : "Notification auth: disabled";
         if (pinUntil) {
           const now = Math.floor(Date.now() / 1000);
           const remaining = Math.max(0, pinUntil - now);
@@ -461,12 +472,20 @@
           sshEnabled.disabled = false;
           sshToggleBusy = false;
         }
+        if (sshNotifyEnabled) {
+          sshNotifyEnabled.checked = notifyEnabled;
+          sshNotifyEnabled.disabled = false;
+        }
       } catch (_) {
         sshStatusText.textContent = "Status: offline";
         sshAddressText.textContent = "Address: (unavailable)";
         sshPinText.textContent = "PIN: (unavailable)";
+        sshNotifyText.textContent = "Notification auth: (unavailable)";
         if (sshEnabled) {
           sshEnabled.disabled = false;
+        }
+        if (sshNotifyEnabled) {
+          sshNotifyEnabled.disabled = false;
         }
       }
     }
@@ -720,6 +739,24 @@
       } finally {
         sshEnabled.disabled = false;
         sshToggleBusy = false;
+      }
+    });
+
+    sshNotifyEnabled.addEventListener("change", async () => {
+      const notifyEnabled = sshNotifyEnabled.checked;
+      sshNotifyEnabled.disabled = true;
+      try {
+        await fetch("http://127.0.0.1:8765/ssh/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ notify_enabled: notifyEnabled, ui_consent: true })
+        });
+        await refreshSshStatus();
+        showToast(notifyEnabled ? "Notification auth enabled" : "Notification auth disabled");
+      } catch (_) {
+        showToast("Failed to update notification auth");
+      } finally {
+        sshNotifyEnabled.disabled = false;
       }
     });
 

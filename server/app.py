@@ -572,6 +572,13 @@ def _set_setting_bool(key: str, value: bool) -> None:
 def _set_setting_int(key: str, value: int) -> None:
     storage.set_setting(key, str(value))
 
+def _get_setting_str(key: str, default: str) -> str:
+    raw = storage.get_setting(key)
+    if raw is None:
+        storage.set_setting(key, default)
+        return default
+    return raw
+
 
 def _write_authorized_keys():
     keys = storage.list_active_ssh_keys()
@@ -654,10 +661,11 @@ def _start_dropbear(port: int, log_event: bool = True) -> Dict:
         env["HOME"] = str(ssh_home_dir)
         env["PWD"] = str(ssh_work_dir)
         env["DROPBEAR_PIN_FILE"] = str(ssh_pin_file)
-        env["DROPBEAR_NOAUTH_PROMPT_DIR"] = str(ssh_noauth_prompt_dir)
-        env["DROPBEAR_NOAUTH_PROMPT_TIMEOUT"] = str(
-            _get_setting_int("ssh_noauth_prompt_timeout", 10)
-        )
+        if _get_setting_bool("ssh_notify_enabled", True):
+            env["DROPBEAR_NOAUTH_PROMPT_DIR"] = str(ssh_noauth_prompt_dir)
+            env["DROPBEAR_NOAUTH_PROMPT_TIMEOUT"] = str(
+                _get_setting_int("ssh_noauth_prompt_timeout", 10)
+            )
         log_path = ssh_dir / "dropbear.log"
 
         log_fh = open(log_path, "a", encoding="utf-8", buffering=1)
@@ -780,6 +788,8 @@ async def ssh_stop(payload: Dict):
 
 @app.get("/ssh/noauth/requests")
 async def ssh_noauth_requests():
+    if not _get_setting_bool("ssh_notify_enabled", True):
+        return {"requests": []}
     return {"requests": _list_noauth_prompts()}
 
 
@@ -789,6 +799,8 @@ async def ssh_noauth_respond(payload: Dict):
     ui_consent = payload.get("ui_consent") is True
     if not ui_consent:
         _require_permission("ssh_noauth", permission_id)
+    if not _get_setting_bool("ssh_notify_enabled", True):
+        raise HTTPException(status_code=409, detail="noauth_prompt_disabled")
     req_id = (payload.get("id") or "").strip()
     if not req_id:
         raise HTTPException(status_code=400, detail="missing_id")
@@ -842,6 +854,7 @@ async def ssh_status():
         "host_key": {k: str(v) for k, v in _ssh_host_key_paths().items()},
         "port": port,
         "enabled": _get_setting_bool("ssh_enabled", True),
+        "notify_enabled": _get_setting_bool("ssh_notify_enabled", True),
         "username": _ssh_username(),
         "pin_until": _pin_expires(),
         "last_error": _SSH_LAST_ERROR,
@@ -857,6 +870,7 @@ async def ssh_config(payload: Dict):
         _require_permission("ssh", permission_id)
     enabled = payload.get("enabled")
     port = payload.get("port")
+    notify_enabled = payload.get("notify_enabled")
     if isinstance(port, str) and port.strip().isdigit():
         port = int(port.strip())
     if isinstance(port, int) and port > 0:
@@ -865,6 +879,10 @@ async def ssh_config(payload: Dict):
         _SSH_PORT = port
     if isinstance(enabled, bool):
         _set_setting_bool("ssh_enabled", enabled)
+    if isinstance(notify_enabled, bool):
+        _set_setting_bool("ssh_notify_enabled", notify_enabled)
+    if isinstance(notify_enabled, bool) and _dropbear_running():
+        _restart_dropbear_if_running()
     if enabled is True:
         result = _start_dropbear(_SSH_PORT)
     elif enabled is False:

@@ -16,7 +16,9 @@ import jp.espresso3389.kugutz.ui.MainActivity
 class PermissionBroker(private val context: Context) {
     fun requestConsent(tool: String, detail: String, onResult: (Boolean) -> Unit) {
         android.util.Log.d("KugutzPerm", "requestConsent tool=$tool detail=$detail")
-        postNotification(tool, detail)
+        if (tool != "ssh_pin") {
+            postNotification(tool, detail)
+        }
         if ((tool == "credentials" || tool == "ssh_noauth" || tool == "ssh_pin") && context is FragmentActivity) {
             val manager = BiometricManager.from(context)
             val canAuth = manager.canAuthenticate(

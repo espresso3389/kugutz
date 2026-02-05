@@ -8,18 +8,24 @@
 - Ensure latest `server/app.py` and `server/storage/db.py` are copied into
   `app/android/app/src/main/assets/server/`
 
-## 3) Android build
+## 3) Build native USB libs
+- Run `NDK_DIR=... ./scripts/build_libusb_android.sh`
+- Run `NDK_DIR=... ./scripts/build_libuvc_android.sh`
+- Verify `app/android/app/src/main/jniLibs/<ABI>/libusb1.0.so` and
+  `app/android/app/src/main/jniLibs/<ABI>/libuvc.so` exist
+
+## 4) Android build
 - Open `app/android` in Android Studio
 - Set your final applicationId if needed
 - Build and install on a device (Android 14+)
 
-## 4) Runtime smoke check (device)
+## 5) Runtime smoke check (device)
 - Launch the app
 - Confirm the UI loads (from `files/www`)
 - Toggle SSHD and verify status shows running
 - Start/stop Python worker and confirm status updates
 - Test SSH login (public-key, notification-based no-auth, or PIN auth)
 
-## 5) Optional local smoke test (desktop)
+## 6) Optional local smoke test (desktop)
 - Run `python server/app.py`
 - Run `python scripts/smoke_test.py`

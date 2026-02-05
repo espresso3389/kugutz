@@ -1,3 +1,9 @@
 [submodule "third_party/dropbear"]
 	path = third_party/dropbear
 	url = https://github.com/espresso3389/dropbear.git
+[submodule "third_party/libusb"]
+	path = third_party/libusb
+	url = https://github.com/libusb/libusb.git
+[submodule "third_party/libuvc"]
+	path = third_party/libuvc
+	url = https://github.com/libuvc/libuvc.git

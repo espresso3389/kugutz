@@ -69,8 +69,25 @@ val syncServerAssets by tasks.registering(Copy::class) {
     }
 }
 
+val buildUsbLibs by tasks.registering(Exec::class) {
+    val repoRoot = rootProject.projectDir.parentFile.parentFile
+    val ndkDir = android.ndkDirectory?.absolutePath
+        ?: System.getenv("ANDROID_NDK_ROOT")
+        ?: System.getenv("ANDROID_NDK_HOME")
+        ?: System.getenv("NDK_DIR")
+    if (ndkDir.isNullOrBlank()) {
+        throw GradleException(
+            "NDK_DIR is required to build libusb/libuvc. " +
+                "Set ANDROID_NDK_ROOT or ANDROID_NDK_HOME."
+        )
+    }
+    workingDir = repoRoot
+    environment("NDK_DIR", ndkDir)
+    commandLine("bash", "-lc", "./scripts/build_libusb_android.sh && ./scripts/build_libuvc_android.sh")
+}
+
 tasks.named("preBuild") {
-    dependsOn(syncServerAssets)
+    dependsOn(syncServerAssets, buildUsbLibs)
 }
 
 dependencies {

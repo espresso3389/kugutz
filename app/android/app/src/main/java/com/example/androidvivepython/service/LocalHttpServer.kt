@@ -230,6 +230,12 @@ class LocalHttpServer(
                         .put("updated_at", row.updatedAt)
                 )
             }
+            uri == "/builtins/tts" && session.method == Method.POST -> {
+                return jsonError(Response.Status.NOT_IMPLEMENTED, "not_implemented", JSONObject().put("feature", "tts"))
+            }
+            uri == "/builtins/stt" && session.method == Method.POST -> {
+                return jsonError(Response.Status.NOT_IMPLEMENTED, "not_implemented", JSONObject().put("feature", "stt"))
+            }
             uri == "/ssh/status" -> {
                 val status = sshdManager.status()
                 jsonResponse(
@@ -393,8 +399,8 @@ class LocalHttpServer(
         return response
     }
 
-    private fun jsonError(status: Response.Status, code: String): Response {
-        val payload = JSONObject().put("error", code)
+    private fun jsonError(status: Response.Status, code: String, extra: JSONObject? = null): Response {
+        val payload = (extra ?: JSONObject()).put("error", code)
         val response = newFixedLengthResponse(status, "application/json", payload.toString())
         response.addHeader("Cache-Control", "no-cache")
         return response

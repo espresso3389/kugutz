@@ -9,6 +9,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -50,6 +52,12 @@ jobs:
       - name: Install Android NDK
         run: |
           yes | sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;29.0.14206865"
+      - name: Build libusb/libuvc
+        env:
+          NDK_DIR: ${{ env.ANDROID_SDK_ROOT }}/ndk/29.0.14206865
+        run: |
+          ./scripts/build_libusb_android.sh
+          ./scripts/build_libuvc_android.sh
       - name: Build Python-for-Android runtime
         env:
           SDK_DIR: ${{ env.ANDROID_SDK_ROOT }}
@@ -76,6 +84,8 @@ jobs:
     needs: p4a-build
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

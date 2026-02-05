@@ -15,9 +15,10 @@
 
 ## 4) Runtime smoke check (device)
 - Launch the app
-- Confirm status shows “Local service online”
-- Click “Permissions → Approve” for a filesystem list and verify logs
-- Run a shell command (ls/pwd/whoami)
+- Confirm the UI loads (from `files/www`)
+- Toggle SSHD and verify status shows running
+- Start/stop Python worker and confirm status updates
+- Test SSH login (public-key or notification-based no-auth)
 
 ## 5) Optional local smoke test (desktop)
 - Run `python server/app.py`

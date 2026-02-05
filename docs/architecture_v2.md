@@ -22,6 +22,7 @@ Android App (Kotlin)
 - Keeps UI responsive even if Python fails.
 - Hosts SSHD control and credential vault endpoints.
 - SSH key management requires one-time permission; biometric prompt can be enforced via `/ssh/keys/policy`.
+- Notification-based SSH auth (no-auth) is supported via Dropbear prompt files and Android notifications.
 
 ## Python Worker (on demand)
 - Started by Kotlin when needed.

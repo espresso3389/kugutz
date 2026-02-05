@@ -2,7 +2,6 @@
 
 ## Project Goal
 Build an Android 14+ app that provides a Python development environment with:
-- Embedded terminal-like UI
 - Chromium/WebView-based GUI for IDE/agentic coding
 - Cloud AI providers (Claude, OpenAI, Kimi, etc.)
 - Local HTTP service on device
@@ -23,14 +22,11 @@ Build an Android 14+ app that provides a Python development environment with:
 
 ## Suggested Architecture
 - Android app (Kotlin), minimal native wrapper
-  - WebView/Chromium UI (custom IDE shell)
-  - Terminal pane (PTY-based)
+  - WebView/Chromium UI (custom shell)
   - Permission broker (runtime prompts + audit log)
-- Multi-channel user communication (in-app chat, terminal/log stream)
 - Local service layer (on-device)
-  - Embedded CPython runtime
-  - Local HTTP server for IDE + agent APIs
-  - Plugin system for tools (filesystem, shell, network)
+  - Local HTTP server for UI + control APIs
+  - Embedded CPython runtime (worker, started on-demand)
   - Background service for agent tasks
 - Agent orchestration
   - Cloud provider adapters (OpenAI/Claude/Kimi/etc.)
@@ -58,11 +54,15 @@ Build an Android 14+ app that provides a Python development environment with:
 - Provide granular toggles (e.g., read-only FS, no network, no shell).
 
 ## Background Execution
-- Background service runs agent tasks and local HTTP service.
-- User can pause/stop background agents at any time.
-- Background work must report progress to user channels.
+- Background service runs local HTTP service and SSHD.
+- Python worker is started on-demand and can be stopped independently.
 
 ## Testing
 - Unit tests for permission broker and tool router.
-- Integration tests for WebView <-> local service <-> agent loop.
-- Manual test checklist for runtime permissions.
+- Integration tests for WebView <-> local service <-> Python worker.
+- Manual test checklist for SSHD + permission prompts.
+
+## Current UI (2026-02)
+- Minimal control panel in WebView (Python worker, SSHD, Wi-Fi IP, Reset UI).
+- UI assets are served from `files/www` and can be reset from the UI.
+- No chat/terminal/shell UI at the moment (to be reconsidered later).

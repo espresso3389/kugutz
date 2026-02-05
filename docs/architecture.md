@@ -1,45 +1,41 @@
-# Architecture Overview
+# Architecture Overview (Current)
 
 ## Goals
-- Minimal native Android wrapper hosting a WebView-based IDE.
-- Embedded CPython runtime via Python-for-Android.
-- Local HTTP service on-device for agent APIs, IDE bridge, and tool routing.
-- Background service for long-running agent tasks.
-- Multi-channel user communication (terminal/log stream).
+- Minimal native Android wrapper hosting a WebView-based shell.
+- Embedded CPython runtime via Python-for-Android (worker mode).
+- Local HTTP service on-device for UI + control APIs.
+- Background service for always-up control plane + SSHD.
 - Explicit user consent for all sensitive actions.
 
 ## High-Level Components
 1) Android Shell (Kotlin)
-- WebView UI container (custom IDE shell)
-- Terminal panel (PTY-backed or virtual terminal)
+- WebView UI container
 - Permission broker (runtime prompts + audit log)
-- Background service controller (start/stop/pause agents)
+- Background service controller
+- SSHD manager
 
-2) Local Python Service (Python)
+2) Kotlin Local HTTP Service
 - HTTP server (localhost) exposing:
-  - IDE bridge endpoints
-  - Agent session APIs
-  - Tool invocation gateway
-  - Permission request endpoints
-  - Webhook configuration endpoints
-- Tool plugins (filesystem, shell, network) guarded by permissions
-- Provider adapters (OpenAI, Claude, Kimi)
-- State store (local SQLite)
+  - UI files (`/ui/*`)
+  - Python worker control (`/python/*`)
+  - Permissions + credential vault
+  - SSHD status/config + key management
 
-3) Web UI (HTML/JS)
-- IDE shell UI in WebView
-- Terminal/log streaming view
-- Agent status + progress
-- Native consent trigger via JS bridge
- - Served from user data directory (assets copied on first launch)
+3) Python Worker (Python)
+- Started on-demand for agent execution
+- Can crash without taking down the app
+
+4) Web UI (HTML/JS)
+- Minimal control panel in WebView
+- Native actions via JS bridge
+- Served from user data directory (assets copied on first launch)
 
 ## Process Topology
 - Android app launches:
-  - Starts background service
-  - Boots Python runtime
+  - Starts background service (Kotlin control plane)
   - Starts local HTTP service on localhost
-- WebView loads local UI (file:// or http://127.0.0.1)
-- UI communicates with Python service over HTTP or WebSocket
+  - Python worker starts on demand
+- WebView loads local UI via http://127.0.0.1:8765/ui/index.html
 
 ## Security Model
 - Permission broker mediates access to:
@@ -50,23 +46,20 @@
 - Audit trail for all tool calls and AI actions.
 
 ## Background Execution
-- Android foreground service runs Python service to keep it alive.
-- User can pause/stop agents and terminate background tasks.
-- Background tasks must post progress updates via in-app status.
-- Host service spawns short-lived worker processes for user programs to avoid restarting the host.
+- Android foreground service runs Kotlin control plane and SSHD.
+- Python worker is started on demand and can be restarted independently.
 
 ## Communication Channels
- - In-app chat UI
- - Terminal/log stream in WebView
+- Android notifications for permission prompts and SSH no-auth prompts.
 
-## Module Layout (Proposed)
+## Module Layout (Current)
 - app/
   - android/
-    - app/src/main/java/.../ui        # WebView host, chat/terminal panels
+    - app/src/main/java/.../ui        # WebView host
     - app/src/main/java/.../service   # Foreground service + runtime bootstrap
     - app/src/main/java/.../perm      # Permission broker, audit log
     - app/src/main/assets/www         # Web UI shell
-    - app/src/main/assets/server      # Embedded Python server assets
+    - app/src/main/assets/server      # Embedded Python worker assets
 - server/
   - app.py                            # Local HTTP server entrypoint
   - agents/                           # Agent loop + tool router
@@ -76,22 +69,22 @@
 
 ## API Sketch (Local HTTP)
 - GET /health
-- POST /programs/start
-- POST /programs/{id}/stop
-- GET /programs
-- POST /tools/{tool_name}/invoke
+- POST /python/start
+- POST /python/restart
+- POST /python/stop
 - POST /permissions/request
 - GET /permissions/pending
 - POST /permissions/{id}/approve
 - POST /permissions/{id}/deny
-- GET /logs/stream (SSE)
+- GET /ssh/status
+- POST /ssh/config
 
 ## Build/Bootstrap Plan (Draft)
 1) App skeleton (Android Studio, Kotlin, WebView, Service)
 2) Integrate Python-for-Android runtime
 3) Implement local HTTP server and tool router
 4) Build minimal Web UI shell
-5) Wire multi-channel messaging
+5) Wire notifications for permission/SSH prompts
 6) Add permissions UI + audit log
 
 ## Implementation Plan (Step-by-Step)
@@ -107,28 +100,26 @@
 - Persist permissions in SQLite
 
 3) Web UI
-- Basic layout: chat panel, terminal/log stream, status bar
-- Bridge to local HTTP service for messages and logs
-- Trigger native consent dialogs when available
+- Minimal control panel (Python worker, SSHD, Wi-Fi IP, Reset UI)
+- Trigger native consent dialogs via JS bridge
 
 4) Security
 - Require explicit consent per tool category
 - Record audit events with timestamps and user decisions
 
 ## Runtime Data Layout
-- Editable (SSH HOME)
+-- Editable (SSH HOME)
   - `files/user/` (user-editable root)
-  - `files/user/www` (Web UI content)
-  - `files/user/python/apps` (user Python code)
   - `files/user/.ssh/authorized_keys` (SSH public keys)
-- Protected (app-only)
+-- UI content
+  - `files/www/` (Web UI content, copied from assets; resettable)
+-- Protected (app-only)
   - `files/protected/app.db` (permissions, audit, credential metadata)
-  - `files/protected/secrets/` (encrypted credential vault)
   - `files/protected/ssh/` (Dropbear host keys, logs, pid, auth prompt files)
-- Runtime/supporting
+-- Runtime/supporting
   - `files/bin/` (bundled native binaries copied at runtime)
   - `files/pyenv/` (embedded CPython environment)
-  - `files/server/` (local Python service runtime and logs)
+  - `files/server/` (Python worker assets)
   - `files/profileInstalled` (bootstrap marker)
 
 Note: `files/protected/` is a **policy boundary**, not a kernel-enforced sandbox. Any code running under the app UID (including Python) could access it unless explicitly blocked. Treat it as sensitive and enforce access via app policy and encryption.
@@ -139,12 +130,7 @@ Note: `files/protected/` is a **policy boundary**, not a kernel-enforced sandbox
 - Provider auth flows and key storage
 
 ## Embedded Features
-- HTTP client (by python)
-- libusb/libvc for native USB access
-- TensorFlow Lite support
-- ssh server (Dropbear)
-- ssh client
-  - Dropbear binaries are bundled per-ABI under assets/bin/<abi>/dropbear
+- ssh server (Dropbear; bundled as native libs)
 - Git/GitHub support (gh command?)
 
 ## Credential Vault (Service Access)

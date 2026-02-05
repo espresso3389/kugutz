@@ -25,8 +25,7 @@ class AgentService : Service() {
         sshdManager = SshdManager(this).also { it.startIfEnabled() }
         noAuthPromptManager = SshNoAuthPromptManager(this).also { it.start() }
         localServer = LocalHttpServer(this, runtimeManager).also {
-            val ok = it.startServer()
-            sendLocalStatus(if (ok) "ok" else "offline")
+            it.startServer()
         }
         vaultServer = KeystoreVaultServer(this).apply { start() }
         startForeground(NOTIFICATION_ID, buildNotification())
@@ -64,7 +63,6 @@ class AgentService : Service() {
         sshdManager = null
         localServer?.stopServer()
         localServer = null
-        sendLocalStatus("offline")
         runtimeManager.stop()
         super.onDestroy()
     }
@@ -93,14 +91,5 @@ class AgentService : Service() {
         const val ACTION_START_PYTHON = "jp.espresso3389.kugutz.action.START_PYTHON"
         const val ACTION_RESTART_PYTHON = "jp.espresso3389.kugutz.action.RESTART_PYTHON"
         const val ACTION_STOP_PYTHON = "jp.espresso3389.kugutz.action.STOP_PYTHON"
-        const val ACTION_LOCAL_STATUS = "jp.espresso3389.kugutz.action.LOCAL_STATUS"
-        const val EXTRA_STATUS = "status"
-    }
-
-    private fun sendLocalStatus(status: String) {
-        val intent = Intent(ACTION_LOCAL_STATUS)
-        intent.setPackage(packageName)
-        intent.putExtra(EXTRA_STATUS, status)
-        sendBroadcast(intent)
     }
 }

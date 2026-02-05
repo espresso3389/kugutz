@@ -11,11 +11,6 @@ class WebAppBridge(private val activity: Activity) {
     private val handler = Handler(Looper.getMainLooper())
 
     @JavascriptInterface
-    fun showServiceDialog() {
-        // no-op: status dialog removed
-    }
-
-    @JavascriptInterface
     fun startPythonWorker() {
         handler.post {
             val intent = Intent(activity, AgentService::class.java)

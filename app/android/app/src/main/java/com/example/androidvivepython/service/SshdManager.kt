@@ -1,0 +1,204 @@
+package jp.espresso3389.kugutz.service
+
+import android.content.Context
+import android.content.SharedPreferences
+import android.util.Log
+import java.io.File
+import java.util.concurrent.atomic.AtomicReference
+
+class SshdManager(private val context: Context) {
+    private val prefs: SharedPreferences =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val processRef = AtomicReference<Process?>(null)
+
+    fun startIfEnabled() {
+        if (isEnabled()) {
+            start()
+        }
+    }
+
+    fun start(): Boolean {
+        if (processRef.get()?.isAlive == true) {
+            return true
+        }
+        val binDir = File(context.filesDir, "bin")
+        val dropbear = resolveBinary("libdropbear.so", File(binDir, "dropbear"))
+        val dropbearkey = resolveBinary("libdropbearkey.so", File(binDir, "dropbearkey"))
+        if (dropbear == null) {
+            Log.w(TAG, "Dropbear binary missing")
+            return false
+        }
+        if (dropbearkey == null) {
+            Log.w(TAG, "Dropbearkey binary missing")
+            return false
+        }
+        val userHome = File(context.filesDir, "user")
+        val sshDir = File(userHome, ".ssh")
+        val protectedDir = File(context.filesDir, "protected/ssh")
+        sshDir.mkdirs()
+        protectedDir.mkdirs()
+        val logFile = File(protectedDir, "dropbear.log")
+        val pidFile = File(protectedDir, "dropbear.pid")
+        val noauthDir = File(protectedDir, "noauth_prompts")
+        noauthDir.mkdirs()
+        val noauthEnabled = isNoAuthEnabled()
+        val authDir = if (noauthEnabled) File(protectedDir, "noauth_keys") else sshDir
+        authDir.mkdirs()
+
+        if (pidFile.exists()) {
+            try {
+                val pid = pidFile.readText().trim()
+                if (pid.isNotBlank()) {
+                    ProcessBuilder("kill", "-9", pid).start().waitFor()
+                }
+            } catch (_: Exception) {
+            } finally {
+                pidFile.delete()
+            }
+        }
+
+        val hostKey = File(protectedDir, "dropbear_host_key")
+        if (!hostKey.exists()) {
+            val ok = generateHostKey(dropbearkey, hostKey)
+            if (!ok) {
+                Log.w(TAG, "Failed to generate host key")
+                return false
+            }
+        }
+        val authKeys = File(sshDir, "authorized_keys")
+        if (!authKeys.exists()) {
+            authKeys.writeText("")
+        }
+
+        val port = getPort()
+        val args = listOf(
+            dropbear.absolutePath,
+            "-F",
+            "-p",
+            port.toString(),
+            "-r",
+            hostKey.absolutePath,
+            "-D",
+            authDir.absolutePath,
+            "-P",
+            pidFile.absolutePath,
+            "-s"
+        )
+        return try {
+            val pb = ProcessBuilder(args)
+            pb.environment()["HOME"] = userHome.absolutePath
+            if (noauthEnabled) {
+                pb.environment()["DROPBEAR_NOAUTH_PROMPT_DIR"] = noauthDir.absolutePath
+                pb.environment()["DROPBEAR_NOAUTH_PROMPT_TIMEOUT"] = "10"
+            }
+            pb.redirectErrorStream(true)
+            pb.redirectOutput(logFile)
+            val proc = pb.start()
+            processRef.set(proc)
+            Log.i(TAG, "SSHD started on port $port")
+            true
+        } catch (ex: Exception) {
+            Log.e(TAG, "Failed to start SSHD", ex)
+            false
+        }
+    }
+
+    fun stop() {
+        val proc = processRef.getAndSet(null) ?: return
+        try {
+            proc.destroy()
+        } catch (_: Exception) {
+        }
+    }
+
+    fun status(): SshStatus {
+        val running = processRef.get()?.isAlive == true
+        return SshStatus(
+            enabled = isEnabled(),
+            running = running,
+            port = getPort(),
+            noauthEnabled = isNoAuthEnabled(),
+            homeDir = File(context.filesDir, "user").absolutePath,
+            authorizedKeys = File(context.filesDir, "user/.ssh/authorized_keys").absolutePath
+        )
+    }
+
+    fun updateConfig(enabled: Boolean, port: Int?, noauthEnabled: Boolean?): SshStatus {
+        val wasRunning = processRef.get()?.isAlive == true
+        val prevPort = getPort()
+        val prevNoauth = isNoAuthEnabled()
+        prefs.edit().putBoolean(KEY_ENABLED, enabled).apply()
+        if (port != null && port > 0) {
+            prefs.edit().putInt(KEY_PORT, port).apply()
+        }
+        if (noauthEnabled != null) {
+            prefs.edit().putBoolean(KEY_NOAUTH, noauthEnabled).apply()
+        }
+        val portChanged = port != null && port > 0 && port != prevPort
+        val noauthChanged = noauthEnabled != null && noauthEnabled != prevNoauth
+        val needsRestart = wasRunning && enabled && (portChanged || noauthChanged)
+        if (enabled) {
+            if (needsRestart) {
+                stop()
+                start()
+            } else if (!wasRunning) {
+                start()
+            }
+        } else {
+            stop()
+        }
+        return status()
+    }
+
+    fun isEnabled(): Boolean = prefs.getBoolean(KEY_ENABLED, true)
+
+    fun getPort(): Int = prefs.getInt(KEY_PORT, 2222)
+
+    fun isNoAuthEnabled(): Boolean = prefs.getBoolean(KEY_NOAUTH, false)
+
+    private fun generateHostKey(dropbearkey: File, hostKey: File): Boolean {
+        return try {
+            val proc = ProcessBuilder(
+                dropbearkey.absolutePath,
+                "-t",
+                "ed25519",
+                "-f",
+                hostKey.absolutePath
+            ).start()
+            val rc = proc.waitFor()
+            rc == 0 && hostKey.exists()
+        } catch (ex: Exception) {
+            Log.e(TAG, "dropbearkey failed", ex)
+            false
+        }
+    }
+
+    private fun resolveBinary(nativeName: String, fallback: File): File? {
+        val nativeDir = context.applicationInfo.nativeLibraryDir
+        val nativeFile = File(nativeDir, nativeName)
+        if (nativeFile.exists()) {
+            return nativeFile
+        }
+        if (fallback.exists()) {
+            return fallback
+        }
+        return null
+    }
+
+    data class SshStatus(
+        val enabled: Boolean,
+        val running: Boolean,
+        val port: Int,
+        val noauthEnabled: Boolean,
+        val homeDir: String,
+        val authorizedKeys: String
+    )
+
+    companion object {
+        private const val TAG = "SshdManager"
+        const val PREFS = "sshd_settings"
+        const val KEY_ENABLED = "enabled"
+        const val KEY_PORT = "port"
+        const val KEY_NOAUTH = "noauth_enabled"
+    }
+}

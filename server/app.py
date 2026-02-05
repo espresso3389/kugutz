@@ -240,7 +240,7 @@ def _vault_request(command: str, name: str, payload: str = "") -> str:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "db": storage.encryption_status()}
 
 
 @app.get("/ui/version")

@@ -6,10 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.app.PendingIntent
 import androidx.core.app.NotificationCompat
-import org.json.JSONArray
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -24,6 +21,8 @@ data class SshNoAuthRequest(
 class SshNoAuthPromptManager(private val context: Context) {
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val pending = ConcurrentHashMap<String, SshNoAuthRequest>()
+    private val promptDir = File(context.filesDir, "protected/ssh/noauth_prompts")
+    private val prefs = context.getSharedPreferences(SshdManager.PREFS, Context.MODE_PRIVATE)
 
     fun start() {
         executor.scheduleAtFixedRate({ pollOnce() }, 1, 2, TimeUnit.SECONDS)
@@ -34,7 +33,14 @@ class SshNoAuthPromptManager(private val context: Context) {
     }
 
     private fun pollOnce() {
-        val requests = fetchRequests() ?: return
+        if (!prefs.getBoolean(SshdManager.KEY_NOAUTH, false)) {
+            for (id in pending.keys) {
+                cancelNotification(id)
+            }
+            pending.clear()
+            return
+        }
+        val requests = fetchRequests()
         val activeIds = requests.map { it.id }.toSet()
         for (req in requests) {
             if (pending.putIfAbsent(req.id, req) == null) {
@@ -49,32 +55,28 @@ class SshNoAuthPromptManager(private val context: Context) {
         }
     }
 
-    private fun fetchRequests(): List<SshNoAuthRequest>? {
-        val url = URL("http://127.0.0.1:8765/ssh/noauth/requests")
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "GET"
-        conn.connectTimeout = 1000
-        conn.readTimeout = 1000
-        return try {
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            val json = JSONObject(body)
-            val arr = json.optJSONArray("requests") ?: JSONArray()
-            val out = mutableListOf<SshNoAuthRequest>()
-            for (i in 0 until arr.length()) {
-                val row = arr.optJSONObject(i) ?: continue
-                val id = row.optString("id")
-                if (id.isBlank()) continue
-                val user = row.optString("user")
-                val addr = row.optString("addr")
-                val createdAt = row.optLong("created_at", 0L)
-                out.add(SshNoAuthRequest(id, user, addr, createdAt))
-            }
-            out
-        } catch (_: Exception) {
-            null
-        } finally {
-            conn.disconnect()
+    private fun fetchRequests(): List<SshNoAuthRequest> {
+        if (!promptDir.exists()) {
+            return emptyList()
         }
+        val out = mutableListOf<SshNoAuthRequest>()
+        val files = promptDir.listFiles { f -> f.isFile && f.name.endsWith(".req") } ?: return out
+        for (file in files) {
+            val line = try {
+                file.readLines().firstOrNull() ?: continue
+            } catch (_: Exception) {
+                continue
+            }
+            val parts = line.split("\t")
+            if (parts.isEmpty()) continue
+            val id = parts.getOrNull(0)?.trim().orEmpty()
+            if (id.isBlank()) continue
+            val user = parts.getOrNull(1)?.trim().orEmpty()
+            val addr = parts.getOrNull(2)?.trim().orEmpty()
+            val createdAt = parts.getOrNull(3)?.trim()?.toLongOrNull() ?: 0L
+            out.add(SshNoAuthRequest(id, user, addr, createdAt))
+        }
+        return out
     }
 
     private fun showNotification(req: SshNoAuthRequest) {

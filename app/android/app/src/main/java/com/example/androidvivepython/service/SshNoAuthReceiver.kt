@@ -4,42 +4,34 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.app.NotificationManager
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.File
 
 class SshNoAuthReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_RESPOND) return
         val reqId = intent.getStringExtra(EXTRA_ID) ?: return
+        if (!isSafeId(reqId)) return
         val allow = intent.getBooleanExtra(EXTRA_ALLOW, false)
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.cancel(reqId.hashCode())
         Thread {
-            postResponse(reqId, allow)
+            writeResponse(context, reqId, allow)
         }.start()
     }
 
-    private fun postResponse(reqId: String, allow: Boolean) {
-        val url = URL("http://127.0.0.1:8765/ssh/noauth/respond")
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.connectTimeout = 1500
-        conn.readTimeout = 1500
+    private fun writeResponse(context: Context, reqId: String, allow: Boolean) {
+        val dir = File(context.filesDir, "protected/ssh/noauth_prompts")
+        dir.mkdirs()
+        val respFile = File(dir, "$reqId.resp")
         try {
-            val payload = JSONObject()
-                .put("id", reqId)
-                .put("allow", allow)
-                .put("ui_consent", true)
-            conn.outputStream.use { it.write(payload.toString().toByteArray()) }
-            conn.inputStream.use { }
+            respFile.writeText(if (allow) "allow" else "deny")
         } catch (_: Exception) {
             // ignore
-        } finally {
-            conn.disconnect()
         }
+    }
+
+    private fun isSafeId(value: String): Boolean {
+        return value.matches(Regex("^[A-Za-z0-9_-]+$"))
     }
 
     companion object {

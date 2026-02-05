@@ -11,8 +11,10 @@ import androidx.core.app.NotificationCompat
 
 class AgentService : Service() {
     private lateinit var runtimeManager: PythonRuntimeManager
+    private var localServer: LocalHttpServer? = null
     private var vaultServer: KeystoreVaultServer? = null
-    private var sshPromptManager: SshNoAuthPromptManager? = null
+    private var sshdManager: SshdManager? = null
+    private var noAuthPromptManager: SshNoAuthPromptManager? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -20,14 +22,22 @@ class AgentService : Service() {
         extractor.extractUiAssetsIfMissing()
         extractor.extractDropbearIfMissing()
         runtimeManager = PythonRuntimeManager(this)
+        sshdManager = SshdManager(this).also { it.startIfEnabled() }
+        noAuthPromptManager = SshNoAuthPromptManager(this).also { it.start() }
+        localServer = LocalHttpServer(this, runtimeManager).also {
+            val ok = it.startServer()
+            sendLocalStatus(if (ok) "ok" else "offline")
+        }
         vaultServer = KeystoreVaultServer(this).apply { start() }
-        sshPromptManager = SshNoAuthPromptManager(this).apply { start() }
         startForeground(NOTIFICATION_ID, buildNotification())
-        runtimeManager.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            ACTION_START_PYTHON -> {
+                android.util.Log.i("AgentService", "Start action received")
+                runtimeManager.startWorker()
+            }
             ACTION_RESTART_PYTHON -> {
                 android.util.Log.i("AgentService", "Restart action received")
                 runtimeManager.restartSoft()
@@ -46,10 +56,15 @@ class AgentService : Service() {
     }
 
     override fun onDestroy() {
-        sshPromptManager?.stop()
-        sshPromptManager = null
         vaultServer?.stop()
         vaultServer = null
+        noAuthPromptManager?.stop()
+        noAuthPromptManager = null
+        sshdManager?.stop()
+        sshdManager = null
+        localServer?.stopServer()
+        localServer = null
+        sendLocalStatus("offline")
         runtimeManager.stop()
         super.onDestroy()
     }
@@ -75,7 +90,17 @@ class AgentService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 1001
+        const val ACTION_START_PYTHON = "jp.espresso3389.kugutz.action.START_PYTHON"
         const val ACTION_RESTART_PYTHON = "jp.espresso3389.kugutz.action.RESTART_PYTHON"
         const val ACTION_STOP_PYTHON = "jp.espresso3389.kugutz.action.STOP_PYTHON"
+        const val ACTION_LOCAL_STATUS = "jp.espresso3389.kugutz.action.LOCAL_STATUS"
+        const val EXTRA_STATUS = "status"
+    }
+
+    private fun sendLocalStatus(status: String) {
+        val intent = Intent(ACTION_LOCAL_STATUS)
+        intent.setPackage(packageName)
+        intent.putExtra(EXTRA_STATUS, status)
+        sendBroadcast(intent)
     }
 }

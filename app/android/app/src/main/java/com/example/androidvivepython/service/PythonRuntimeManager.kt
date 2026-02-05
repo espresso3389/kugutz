@@ -13,10 +13,12 @@ class PythonRuntimeManager(private val context: Context) {
     private val installer = PythonRuntimeInstaller(context)
     private val keyManager = SqlcipherKeyManager(context)
     private val lock = Any()
+    private val statusLock = Any()
+    private var status: String = "offline"
     private var pendingRestart = false
     private var stopping = false
 
-    fun start(): Boolean {
+    fun startWorker(): Boolean {
         synchronized(lock) {
             if (runtimeThread != null && runtimeThread?.isAlive == true) {
                 Log.i(TAG, "Start requested but runtime already running")
@@ -67,16 +69,16 @@ class PythonRuntimeManager(private val context: Context) {
                     stopping = false
                 }
                 if (shouldRestart) {
-                    sendHealthUpdate("starting")
-                    start()
+                    updateStatus("starting")
+                    startWorker()
                 } else {
-                    sendHealthUpdate("offline")
+                    updateStatus("offline")
                 }
             }
         }.apply { isDaemon = true }
 
         runtimeThread?.start()
-        sendHealthUpdate("starting")
+        updateStatus("starting")
         startHealthProbe()
         Log.i(TAG, "Python service start requested")
         return true
@@ -86,6 +88,7 @@ class PythonRuntimeManager(private val context: Context) {
         // Py_FinalizeEx is not safe on Android for this embedded runtime; avoid crashing the UI.
         Log.w(TAG, "Python shutdown requested; skipping Py_FinalizeEx to keep UI stable")
         runtimeThread = null
+        updateStatus("offline")
     }
 
     fun restartSoft(): Boolean {
@@ -111,8 +114,8 @@ class PythonRuntimeManager(private val context: Context) {
             }
         }
         Log.i(TAG, "Restart requested; starting Python")
-        sendHealthUpdate("starting")
-        return if (shouldStart) start() else start()
+        updateStatus("starting")
+        return if (shouldStart) startWorker() else startWorker()
     }
 
     fun requestShutdown() {
@@ -125,13 +128,13 @@ class PythonRuntimeManager(private val context: Context) {
             synchronized(lock) {
                 stopping = false
             }
-            sendHealthUpdate("offline")
+            updateStatus("offline")
             return
         }
-        sendHealthUpdate("stopping")
+        updateStatus("stopping")
         Thread {
             try {
-                val conn = URL("http://127.0.0.1:8765/shutdown").openConnection() as HttpURLConnection
+                val conn = URL("http://127.0.0.1:8766/shutdown").openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.connectTimeout = 1500
                 conn.readTimeout = 1500
@@ -169,9 +172,9 @@ class PythonRuntimeManager(private val context: Context) {
             }
             if (runtimeThread != null && runtimeThread?.isAlive == true) {
                 Log.w(TAG, "Shutdown timed out; Python thread still running")
-                sendHealthUpdate("ok")
+                updateStatus("ok")
             } else {
-                sendHealthUpdate("offline")
+                updateStatus("offline")
             }
         }.apply { isDaemon = true }.start()
     }
@@ -180,7 +183,7 @@ class PythonRuntimeManager(private val context: Context) {
         Thread {
             repeat(8) { attempt ->
                 try {
-                    val conn = URL("http://127.0.0.1:8765/health")
+                    val conn = URL("http://127.0.0.1:8766/health")
                         .openConnection() as HttpURLConnection
                     conn.connectTimeout = 1500
                     conn.readTimeout = 1500
@@ -188,7 +191,7 @@ class PythonRuntimeManager(private val context: Context) {
                     val code = conn.responseCode
                     if (code in 200..299) {
                         Log.i(TAG, "Python service health OK")
-                        sendHealthUpdate("ok")
+                        updateStatus("ok")
                         return@Thread
                     }
                     Log.w(TAG, "Health check failed (attempt ${attempt + 1}): $code")
@@ -202,15 +205,24 @@ class PythonRuntimeManager(private val context: Context) {
                 }
             }
             Log.e(TAG, "Python service health check failed after retries")
-            sendHealthUpdate("offline")
+            updateStatus("offline")
         }.apply { isDaemon = true }.start()
     }
 
-    private fun sendHealthUpdate(status: String) {
+    private fun updateStatus(status: String) {
+        synchronized(statusLock) {
+            this.status = status
+        }
         val intent = Intent(ACTION_PYTHON_HEALTH)
         intent.setPackage(context.packageName)
         intent.putExtra(EXTRA_STATUS, status)
         context.sendBroadcast(intent)
+    }
+
+    fun getStatus(): String {
+        synchronized(statusLock) {
+            return status
+        }
     }
 
     companion object {

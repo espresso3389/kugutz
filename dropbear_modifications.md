@@ -55,7 +55,7 @@ Below is a concise explanation of what we change and why.
    - **Why:** Allow a “no-auth” login to proceed only after the phone user explicitly approves the connection.
    - **How it works:**
      - Dropbear writes a request file in `DROPBEAR_NOAUTH_PROMPT_DIR` with `id\tuser\taddr\ttimestamp`.
-     - The Android app polls `/ssh/noauth/requests` and shows a notification with Allow/Deny actions.
+     - The Android app polls the prompt directory and shows a notification with Allow/Deny actions.
      - The app writes `allow` or `deny` to `<id>.resp`, which Dropbear waits for (timeout via `DROPBEAR_NOAUTH_PROMPT_TIMEOUT`).
    - **Impact:** Each no-auth connection requires a phone prompt; if no response arrives, the login is denied.
 

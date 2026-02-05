@@ -1,0 +1,35 @@
+# Architecture v2: Kotlin Core + Python Worker
+
+This phase moves the always-up responsibilities into Kotlin so the app can stay stable even if the Python worker crashes or fails to start.
+
+## Core Principles
+- Kotlin owns the always-up control plane (UI server, storage, permissions, SSH).
+- Python is a **worker**, started on-demand for agent execution.
+- Local UI and health endpoints are served by Kotlin, not Python.
+
+## Process Model
+```
+Android App (Kotlin)
+  ├─ Local HTTP Server (127.0.0.1:8765)  [always up]
+  ├─ UI assets served from files/www
+  ├─ Storage + permissions (Kotlin + Room + SQLCipher)
+  └─ Python Worker (spawned on demand)
+```
+
+## Kotlin Local Service (always up)
+- Serves `/health` and static UI at `/ui/*` on `127.0.0.1:8765`.
+- Provides `/python/*` endpoints to start/stop/restart the worker.
+- Keeps UI responsive even if Python fails.
+- Hosts SSHD control and credential vault endpoints.
+- SSH key management requires one-time permission; biometric prompt can be enforced via `/ssh/keys/policy`.
+
+## Python Worker (on demand)
+- Started by Kotlin when needed.
+- Should not host the UI or health endpoints.
+- Can crash without taking down the app.
+- Worker health runs on `127.0.0.1:8766`.
+
+## Migration Notes
+- SSH and permission APIs are now handled by Kotlin local service.
+- Python database usage will be phased out; Kotlin will own credential storage.
+ - Credential vault access is gated by permissions + biometric prompt.

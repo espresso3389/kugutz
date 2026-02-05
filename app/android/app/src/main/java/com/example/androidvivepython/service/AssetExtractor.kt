@@ -35,6 +35,7 @@ class AssetExtractor(private val context: Context) {
             targetDir.mkdirs()
             val outFile = File(targetDir, "dropbear")
             if (outFile.exists()) {
+                extractDropbearKeyIfMissing()
                 return outFile
             }
             val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
@@ -45,9 +46,33 @@ class AssetExtractor(private val context: Context) {
             }
             copyAssetFile(assetPath, outFile)
             outFile.setExecutable(true, true)
+            extractDropbearKeyIfMissing()
             outFile
         } catch (ex: Exception) {
             Log.e(TAG, "Failed to extract Dropbear binary", ex)
+            null
+        }
+    }
+
+    fun extractDropbearKeyIfMissing(): File? {
+        return try {
+            val targetDir = File(context.filesDir, "bin")
+            targetDir.mkdirs()
+            val outFile = File(targetDir, "dropbearkey")
+            if (outFile.exists()) {
+                return outFile
+            }
+            val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
+            val assetPath = "bin/$abi/dropbearkey"
+            if (!assetExists(assetPath)) {
+                Log.w(TAG, "Dropbearkey binary not found in assets for ABI $abi")
+                return null
+            }
+            copyAssetFile(assetPath, outFile)
+            outFile.setExecutable(true, true)
+            outFile
+        } catch (ex: Exception) {
+            Log.e(TAG, "Failed to extract Dropbearkey binary", ex)
             null
         }
     }

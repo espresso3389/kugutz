@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.kapt")
 }
 
 android {
@@ -40,6 +41,7 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            pickFirsts += setOf("lib/**/libsqlcipher.so")
         }
     }
 
@@ -77,4 +79,9 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("com.google.android.material:material:1.11.0")
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    kapt("androidx.room:room-compiler:2.6.1")
+    implementation("net.zetetic:android-database-sqlcipher:4.5.4")
 }

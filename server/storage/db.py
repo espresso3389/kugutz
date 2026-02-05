@@ -8,25 +8,39 @@ import time
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
+def _row_factory(cursor, row):
+    return {desc[0]: row[idx] for idx, desc in enumerate(cursor.description)}
+
 
 class Storage:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._encryption_mode = "unknown"
         self._init_db()
 
     def _connect(self):
         key = self._load_sqlcipher_key()
         if key:
-            try:
-                import pysqlcipher3
-                conn = pysqlcipher3.dbapi2.connect(self.db_path)
-                conn.execute(f"PRAGMA key = '{key}';")
-            except Exception:
-                conn = sqlite3.connect(self.db_path)
+            conn = self._connect_sqlcipher(key)
         else:
             conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
+            self._encryption_mode = "sqlite_no_key"
+            conn.row_factory = _row_factory
+        return conn
+
+    def _connect_sqlcipher(self, key: str):
+        try:
+            import importlib
+            dbapi2 = importlib.import_module("pysqlcipher3.dbapi2")
+        except Exception as exc:
+            self._encryption_mode = "sqlcipher_missing"
+            raise RuntimeError("pysqlcipher3 is required for encrypted storage") from exc
+        conn = dbapi2.connect(str(self.db_path))
+        conn.execute(f"PRAGMA key = '{key}';")
+        conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        conn.row_factory = _row_factory
+        self._encryption_mode = "sqlcipher"
         return conn
 
     def _load_sqlcipher_key(self):
@@ -41,83 +55,114 @@ class Storage:
         except Exception:
             return None
 
+    def encryption_status(self) -> Dict[str, object]:
+        return {
+            "encrypted": self._encryption_mode == "sqlcipher",
+            "mode": self._encryption_mode,
+        }
+
     def _init_db(self):
+        key = self._load_sqlcipher_key()
+        if key:
+            self._ensure_encrypted_db(key)
         with self._connect() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS permissions (
-                    id TEXT PRIMARY KEY,
-                    tool TEXT,
-                    detail TEXT,
-                    status TEXT,
-                    scope TEXT,
-                    expires_at INTEGER,
-                    created_at INTEGER
-                )
-                """
+            self._create_schema(conn)
+
+    def _ensure_encrypted_db(self, key: str) -> None:
+        if not self.db_path.exists():
+            return
+        try:
+            conn = self._connect_sqlcipher(key)
+            conn.close()
+            return
+        except Exception:
+            self._delete_db_files()
+            self._encryption_mode = "sqlcipher_reset"
+
+    def _delete_db_files(self) -> None:
+        base = str(self.db_path)
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                Path(base + suffix).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _create_schema(self, conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS permissions (
+                id TEXT PRIMARY KEY,
+                tool TEXT,
+                detail TEXT,
+                status TEXT,
+                scope TEXT,
+                expires_at INTEGER,
+                created_at INTEGER
             )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS credentials (
-                    name TEXT PRIMARY KEY,
-                    value TEXT,
-                    updated_at INTEGER
-                )
-                """
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS credentials (
+                name TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at INTEGER
             )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS services (
-                    name TEXT PRIMARY KEY,
-                    code_hash TEXT,
-                    token TEXT,
-                    created_at INTEGER,
-                    updated_at INTEGER
-                )
-                """
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS services (
+                name TEXT PRIMARY KEY,
+                code_hash TEXT,
+                token TEXT,
+                created_at INTEGER,
+                updated_at INTEGER
             )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS service_credentials (
-                    service_name TEXT,
-                    name TEXT,
-                    value TEXT,
-                    updated_at INTEGER,
-                    PRIMARY KEY(service_name, name)
-                )
-                """
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS service_credentials (
+                service_name TEXT,
+                name TEXT,
+                value TEXT,
+                updated_at INTEGER,
+                PRIMARY KEY(service_name, name)
             )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS audit_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event TEXT,
-                    data TEXT,
-                    created_at INTEGER
-                )
-                """
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event TEXT,
+                data TEXT,
+                created_at INTEGER
             )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ssh_keys (
-                    fingerprint TEXT PRIMARY KEY,
-                    key TEXT,
-                    label TEXT,
-                    expires_at INTEGER,
-                    created_at INTEGER
-                )
-                """
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ssh_keys (
+                fingerprint TEXT PRIMARY KEY,
+                key TEXT,
+                label TEXT,
+                expires_at INTEGER,
+                created_at INTEGER
             )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT,
-                    updated_at INTEGER
-                )
-                """
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at INTEGER
             )
+            """
+        )
 
     def create_permission_request(self, tool: str, detail: str, scope: str, expires_at: int | None) -> str:
         request_id = f"p_{_now_ms()}"

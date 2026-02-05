@@ -5,177 +5,39 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.webkit.JavascriptInterface
-import android.util.Log
-import androidx.appcompat.app.AlertDialog
-import jp.espresso3389.kugutz.perm.PermissionBroker
-import java.net.HttpURLConnection
-import java.net.URL
-import org.json.JSONObject
+import jp.espresso3389.kugutz.service.AgentService
 
 class WebAppBridge(private val activity: Activity) {
-    private val tag = "KugutzBridge"
-    private val broker = PermissionBroker(activity)
     private val handler = Handler(Looper.getMainLooper())
 
     @JavascriptInterface
-    fun requestNativeConsent(requestId: String, tool: String, detail: String) {
-        handler.post {
-            Log.d(tag, "requestNativeConsent tool=$tool id=$requestId detail=$detail")
-            broker.requestConsent(tool, detail) { approved ->
-                val action = if (approved) "approve" else "deny"
-                val url = URL("http://127.0.0.1:8765/permissions/$requestId/$action")
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.connectTimeout = 2000
-                conn.readTimeout = 2000
-                try {
-                    conn.outputStream.use { it.write(ByteArray(0)) }
-                    conn.inputStream.use { }
-                } catch (_: Exception) {
-                    // Ignore network errors; UI will retry via polling.
-                } finally {
-                    conn.disconnect()
-                }
-            }
-        }
+    fun showServiceDialog() {
+        // no-op: status dialog removed
     }
 
     @JavascriptInterface
-    fun notifyPermissionPending(summary: String) {
+    fun startPythonWorker() {
         handler.post {
-            broker.postNotification("Permission pending", summary)
-        }
-    }
-
-    @JavascriptInterface
-    fun setSshEnabled(enabled: Boolean) {
-        handler.post {
-            val detail = if (enabled) "Enable SSHD" else "Disable SSHD"
-            Log.d(tag, "setSshEnabled enabled=$enabled")
-            val requestId = try {
-                requestPermission("ssh", detail)
-            } catch (_: Exception) {
-                null
-            }
-            Log.d(tag, "setSshEnabled requestId=$requestId")
-            if (requestId == null) {
-                return@post
-            }
-            broker.requestConsent("ssh", detail) { approved ->
-                Log.d(tag, "setSshEnabled consent approved=$approved")
-                val action = if (approved) "approve" else "deny"
-                try {
-                    postEmpty("http://127.0.0.1:8765/permissions/$requestId/$action")
-                } catch (_: Exception) {
-                    return@requestConsent
-                }
-                if (!approved) {
-                    return@requestConsent
-                }
-                try {
-                    val payload = JSONObject()
-                        .put("enabled", enabled)
-                        .put("permission_id", requestId)
-                    postJson("http://127.0.0.1:8765/ssh/config", payload.toString())
-                    Log.d(tag, "setSshEnabled config posted")
-                } catch (_: Exception) {
-                    // ignore
-                }
-            }
-        }
-    }
-
-    @JavascriptInterface
-    fun allowSshPinAuth(seconds: Int) {
-        handler.post {
-            val duration = if (seconds > 0) seconds else 30
-            val detail = "Allow PIN SSH login (${duration}s)"
-            Log.d(tag, "allowSshPinAuth seconds=$duration")
-            broker.requestConsent("ssh_pin", detail) { approved ->
-                Log.d(tag, "allowSshPinAuth consent approved=$approved")
-                if (!approved) {
-                    if (activity is MainActivity) {
-                        activity.notifyPinResult(false, null)
-                    }
-                    return@requestConsent
-                }
-                val pin = String.format("%06d", (0..999999).random())
-                Thread {
-                    try {
-                        val payload = JSONObject()
-                            .put("seconds", duration)
-                            .put("pin", pin)
-                            .put("ui_consent", true)
-                        val response = postJson(
-                            "http://127.0.0.1:8765/ssh/pin/allow",
-                            payload.toString()
-                        )
-                        val expiresAt = try {
-                            JSONObject(response).optLong("expires_at", 0L)
-                        } catch (_: Exception) {
-                            0L
-                        }
-                        handler.post {
-                            showPinDialog(pin)
-                        }
-                        if (activity is MainActivity) {
-                            activity.notifyPinResult(true, if (expiresAt > 0) expiresAt else null)
-                        }
-                    } catch (ex: Exception) {
-                        Log.e(tag, "allowSshPinAuth request failed", ex)
-                        if (activity is MainActivity) {
-                            activity.notifyPinResult(false, null)
-                        }
-                    }
-                }.start()
-            }
-        }
-    }
-
-    private fun showPinDialog(pin: String) {
-        val dialog = AlertDialog.Builder(activity)
-            .setTitle("SSH PIN (valid briefly)")
-            .setMessage("PIN: $pin")
-            .setPositiveButton("Close") { _, _ -> }
-            .setCancelable(true)
-            .create()
-        dialog.setOnDismissListener {
-            Thread {
-                try {
-                    val payload = JSONObject().put("ui_consent", true)
-                    postJson("http://127.0.0.1:8765/ssh/pin/clear", payload.toString())
-                } catch (_: Exception) {
-                    // ignore
-                }
-            }.start()
-        }
-        dialog.show()
-    }
-
-    @JavascriptInterface
-    fun showPythonServiceDialog() {
-        handler.post {
-            if (activity is MainActivity) {
-                activity.showStatusDialog()
-            }
-        }
-    }
-
-    @JavascriptInterface
-    fun restartPythonService() {
-        handler.post {
-            val intent = Intent(activity, jp.espresso3389.kugutz.service.AgentService::class.java)
-            intent.action = jp.espresso3389.kugutz.service.AgentService.ACTION_RESTART_PYTHON
+            val intent = Intent(activity, AgentService::class.java)
+            intent.action = AgentService.ACTION_START_PYTHON
             activity.startForegroundService(intent)
         }
     }
 
     @JavascriptInterface
-    fun stopPythonService() {
+    fun restartPythonWorker() {
         handler.post {
-            val intent = Intent(activity, jp.espresso3389.kugutz.service.AgentService::class.java)
-            intent.action = jp.espresso3389.kugutz.service.AgentService.ACTION_STOP_PYTHON
+            val intent = Intent(activity, AgentService::class.java)
+            intent.action = AgentService.ACTION_RESTART_PYTHON
+            activity.startForegroundService(intent)
+        }
+    }
+
+    @JavascriptInterface
+    fun stopPythonWorker() {
+        handler.post {
+            val intent = Intent(activity, AgentService::class.java)
+            intent.action = AgentService.ACTION_STOP_PYTHON
             activity.startForegroundService(intent)
         }
     }
@@ -185,6 +47,9 @@ class WebAppBridge(private val activity: Activity) {
         handler.post {
             val extractor = jp.espresso3389.kugutz.service.AssetExtractor(activity)
             extractor.resetUiAssets()
+            if (activity is MainActivity) {
+                activity.reloadUi()
+            }
         }
     }
 
@@ -205,52 +70,6 @@ class WebAppBridge(private val activity: Activity) {
             addr?.hostAddress ?: ""
         } catch (_: Exception) {
             ""
-        }
-    }
-
-    private fun requestPermission(tool: String, detail: String): String? {
-        val payload = JSONObject()
-            .put("tool", tool)
-            .put("detail", detail)
-            .put("scope", "once")
-        val response = postJson("http://127.0.0.1:8765/permissions/request", payload.toString())
-        return try {
-            val id = JSONObject(response).optString("id", "")
-            Log.d(tag, "requestPermission tool=$tool id=$id")
-            if (id.isBlank()) null else id
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun postEmpty(urlString: String) {
-        val url = URL(urlString)
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.doOutput = true
-        conn.connectTimeout = 2000
-        conn.readTimeout = 2000
-        try {
-            conn.outputStream.use { it.write(ByteArray(0)) }
-            conn.inputStream.use { }
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    private fun postJson(urlString: String, body: String): String {
-        val url = URL(urlString)
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.connectTimeout = 2000
-        conn.readTimeout = 2000
-        try {
-            conn.outputStream.use { it.write(body.toByteArray()) }
-            return conn.inputStream.bufferedReader().use { it.readText() }
-        } finally {
-            conn.disconnect()
         }
     }
 }

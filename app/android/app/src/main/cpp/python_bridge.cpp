@@ -206,7 +206,7 @@ Java_jp_espresso3389_kugutz_service_PythonBridge_start(
         "try:\n"
         "    os.chdir(server_dir)\n"
         "    sys.path.insert(0, server_dir)\n"
-        "    runpy.run_path(os.path.join(server_dir, 'app.py'), run_name='__main__')\n"
+        "    runpy.run_path(os.path.join(server_dir, 'worker.py'), run_name='__main__')\n"
         "except BaseException:\n"
         "    try:\n"
         "        with open(error_log, 'w', encoding='utf-8') as fh:\n"

@@ -115,6 +115,16 @@
 - Require explicit consent per tool category
 - Record audit events with timestamps and user decisions
 
+## Runtime Data Layout
+- Editable
+  - `files/www` (Web UI content)
+  - `files/python/apps` (user Python code)
+  - `files/.ssh/authorized_keys` (SSH public keys)
+- Protected (app-only)
+  - `files/protected/app.db` (permissions, audit, credential metadata)
+  - `files/protected/secrets/` (encrypted credential vault)
+  - `files/protected/ssh/` (Dropbear host keys, logs, pid, auth prompt files)
+
 ## Open Items
 - Python-for-Android packaging details and bootstrap sequence
 - WebView security constraints and local file access strategy

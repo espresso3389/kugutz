@@ -305,6 +305,15 @@ class LocalHttpServer(
                     ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_json")
                 return handleShellExec(payload)
             }
+            (uri == "/web/search" || uri == "/web/search/") -> {
+                if (session.method != Method.POST) {
+                    return jsonError(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
+                }
+                val body = postBody ?: ""
+                val payload = runCatching { JSONObject(body) }.getOrNull()
+                    ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_json")
+                return handleWebSearch(payload)
+            }
             uri == "/ssh/status" -> {
                 val status = sshdManager.status()
                 jsonResponse(
@@ -583,6 +592,117 @@ class LocalHttpServer(
             )
         } catch (ex: Exception) {
             jsonError(Response.Status.INTERNAL_ERROR, "exec_failed", JSONObject().put("detail", ex.message ?: ""))
+        }
+    }
+
+    private fun handleWebSearch(payload: JSONObject): Response {
+        val q = payload.optString("q", payload.optString("query", "")).trim()
+        if (q.isBlank()) {
+            return jsonError(Response.Status.BAD_REQUEST, "query_required")
+        }
+        val maxResults = payload.optInt("max_results", payload.optInt("limit", 5)).coerceIn(1, 10)
+        val permissionId = payload.optString("permission_id", "")
+        if (!isPermissionApproved(permissionId, consume = true)) {
+            val req = permissionStore.create(
+                tool = "network",
+                detail = "DuckDuckGo search: " + q.take(200),
+                scope = "once",
+                identity = "",
+                capability = "web.search"
+            )
+            sendPermissionPrompt(req.id, req.tool, req.detail, false)
+            val requestJson = JSONObject()
+                .put("id", req.id)
+                .put("status", req.status)
+                .put("tool", req.tool)
+                .put("detail", req.detail)
+                .put("scope", req.scope)
+                .put("created_at", req.createdAt)
+            val out = JSONObject()
+                .put("status", "permission_required")
+                .put("request", requestJson)
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, "application/json", out.toString())
+        }
+
+        // DuckDuckGo Instant Answer API (best-effort; not a full web search API).
+        // https://api.duckduckgo.com/?q=...&format=json&no_html=1&skip_disambig=1
+        return try {
+            val url = java.net.URL(
+                "https://api.duckduckgo.com/?" +
+                    "q=" + java.net.URLEncoder.encode(q, "UTF-8") +
+                    "&format=json&no_html=1&skip_disambig=1&t=kugutz"
+            )
+            val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 8000
+                readTimeout = 12000
+                setRequestProperty("Accept", "application/json")
+            }
+            val stream = if (conn.responseCode in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
+            val body = stream.bufferedReader().use { it.readText() }
+            if (conn.responseCode !in 200..299) {
+                return jsonError(
+                    Response.Status.BAD_GATEWAY,
+                    "upstream_error",
+                    JSONObject().put("status", conn.responseCode).put("detail", body.take(400))
+                )
+            }
+            val parsed = JSONObject(body.ifBlank { "{}" })
+
+            val results = org.json.JSONArray()
+            fun addResult(text: String, firstUrl: String) {
+                if (results.length() >= maxResults) return
+                val t = text.trim()
+                val u = firstUrl.trim()
+                if (t.isBlank() || u.isBlank()) return
+                results.put(JSONObject().put("title", t).put("url", u).put("snippet", t))
+            }
+
+            val directResults = parsed.optJSONArray("Results")
+            if (directResults != null) {
+                for (i in 0 until directResults.length()) {
+                    val r = directResults.optJSONObject(i) ?: continue
+                    addResult(r.optString("Text", ""), r.optString("FirstURL", ""))
+                }
+            }
+
+            fun flattenRelated(arr: org.json.JSONArray?) {
+                if (arr == null) return
+                for (i in 0 until arr.length()) {
+                    if (results.length() >= maxResults) return
+                    val o = arr.opt(i)
+                    if (o is JSONObject) {
+                        val topics = o.optJSONArray("Topics")
+                        if (topics != null) {
+                            flattenRelated(topics)
+                            continue
+                        }
+                        addResult(o.optString("Text", ""), o.optString("FirstURL", ""))
+                    }
+                }
+            }
+            flattenRelated(parsed.optJSONArray("RelatedTopics"))
+
+            val abstractText = parsed.optString("AbstractText", "").trim()
+            val abstractUrl = parsed.optString("AbstractURL", "").trim()
+            val heading = parsed.optString("Heading", "").trim()
+            val abstractObj = JSONObject()
+                .put("heading", heading)
+                .put("text", abstractText)
+                .put("url", abstractUrl)
+
+            jsonResponse(
+                JSONObject()
+                    .put("status", "ok")
+                    .put("provider", "duckduckgo_instant_answer")
+                    .put("query", q)
+                    .put("abstract", abstractObj)
+                    .put("results", results)
+            )
+        } catch (ex: java.net.SocketTimeoutException) {
+            jsonError(Response.Status.GATEWAY_TIMEOUT, "upstream_timeout")
+        } catch (ex: Exception) {
+            jsonError(Response.Status.INTERNAL_ERROR, "search_failed", JSONObject().put("detail", ex.message ?: ""))
         }
     }
 

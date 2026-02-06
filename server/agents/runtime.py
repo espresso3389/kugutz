@@ -64,6 +64,7 @@ class BrainRuntime:
                 "You have function tools for LOCAL execution; use them instead of describing actions. "
                 "The runtime executes each tool call locally and returns tool outputs to you. "
                 "If the user asks for any device/file/state action, you MUST call tools (no pretending). "
+                "For web search: use web_search (DuckDuckGo) and ask for permission when prompted. "
                 "Prefer device_api for device controls (python/ssh/shell/memory via Kotlin control plane). "
                 "Use filesystem tools (list_dir/read_file/write_file/mkdir/move_path/delete_path) for file operations under the user root. "
                 "NEVER try to run `ls`/`pwd`/`cat` via a shell. For listing or reading files, ALWAYS use filesystem tools. "
@@ -795,6 +796,21 @@ class BrainRuntime:
             },
             {
                 "type": "function",
+                "name": "web_search",
+                "description": "Search the web via DuckDuckGo (permission-gated). Returns a small set of results.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "query": {"type": "string"},
+                        "max_results": {"type": "integer"},
+                        "permission_id": {"type": "string"},
+                    },
+                    "required": ["query", "max_results", "permission_id"],
+                },
+            },
+            {
+                "type": "function",
                 "name": "write_file",
                 "description": "Write UTF-8 text file under user root.",
                 "parameters": {
@@ -1024,7 +1040,8 @@ class BrainRuntime:
                     tool = str(req.get("tool") or name or "unknown")
                     self._record_message(
                         "assistant",
-                        f"Permission required for tool '{tool}'. Approve it in the app UI and retry. request_id={req_id}",
+                        f"Permission required for tool '{tool}'. Approve it in the app UI and retry. request_id={req_id}. "
+                        f"If you are retrying a tool call that supports permission_id, pass permission_id={req_id}.",
                         {"item_id": item.get("id")},
                     )
                     self._emit_log("brain_response", {"item_id": item.get("id"), "text": "permission_required"})
@@ -1426,6 +1443,30 @@ class BrainRuntime:
                 "cwd": str(args.get("cwd") or ""),
             }
             return self._execute_action(item, action)
+        if name == "web_search":
+            query = str(args.get("query") or "").strip()
+            if not query:
+                return {"status": "error", "error": "missing_query"}
+            try:
+                max_results = int(args.get("max_results") or 5)
+            except Exception:
+                max_results = 5
+            max_results = max(1, min(max_results, 10))
+            permission_id = str(args.get("permission_id") or "").strip()
+            try:
+                resp = requests.post(
+                    "http://127.0.0.1:8765/web/search",
+                    json={"query": query, "max_results": max_results, "permission_id": permission_id},
+                    timeout=15,
+                )
+                body = resp.json() if resp.content else {}
+            except Exception as ex:
+                return {"status": "error", "error": "search_failed", "detail": str(ex)}
+            if resp.status_code == 403 and isinstance(body, dict) and body.get("status") == "permission_required":
+                return body
+            if resp.status_code not in (200, 201) or not isinstance(body, dict):
+                return {"status": "error", "error": "upstream_error", "http_status": resp.status_code, "body": body}
+            return body
         if name == "write_file":
             action = {
                 "type": "write_file",

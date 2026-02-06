@@ -69,6 +69,17 @@ val syncServerAssets by tasks.registering(Copy::class) {
     }
 }
 
+val syncUserDefaults by tasks.registering(Copy::class) {
+    val repoRoot = rootProject.projectDir.parentFile.parentFile
+    val srcDir = repoRoot.resolve("user")
+    val dstDir = projectDir.resolve("src/main/assets/user_defaults")
+    from(srcDir)
+    into(dstDir)
+    doFirst {
+        dstDir.deleteRecursively()
+    }
+}
+
 val buildUsbLibs by tasks.registering(Exec::class) {
     val repoRoot = rootProject.projectDir.parentFile.parentFile
     val ndkDir = android.ndkDirectory?.absolutePath
@@ -91,7 +102,7 @@ val buildUsbLibs by tasks.registering(Exec::class) {
 }
 
 tasks.named("preBuild") {
-    dependsOn(syncServerAssets, buildUsbLibs)
+    dependsOn(syncServerAssets, syncUserDefaults, buildUsbLibs)
 }
 
 dependencies {

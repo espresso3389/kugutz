@@ -100,6 +100,31 @@ class AssetExtractor(private val context: Context) {
         }
     }
 
+    fun extractUserDefaultsIfMissing(): File? {
+        return try {
+            val targetDir = File(context.filesDir, "user")
+            targetDir.mkdirs()
+
+            // Only seed defaults if missing, so we never overwrite user edits.
+            val agentFile = File(targetDir, "AGENTS.md")
+            val toolsFile = File(targetDir, "TOOLS.md")
+            if (agentFile.exists() && toolsFile.exists()) {
+                return targetDir
+            }
+
+            if (!agentFile.exists() && assetExists("user_defaults/AGENTS.md")) {
+                copyAssetFile("user_defaults/AGENTS.md", agentFile)
+            }
+            if (!toolsFile.exists() && assetExists("user_defaults/TOOLS.md")) {
+                copyAssetFile("user_defaults/TOOLS.md", toolsFile)
+            }
+            targetDir
+        } catch (ex: Exception) {
+            Log.e(TAG, "Failed to extract user defaults", ex)
+            null
+        }
+    }
+
     fun resetUiAssets(): File? {
         return try {
             val root = context.filesDir

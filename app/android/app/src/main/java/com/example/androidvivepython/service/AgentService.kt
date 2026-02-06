@@ -20,6 +20,7 @@ class AgentService : Service() {
         super.onCreate()
         val extractor = AssetExtractor(this)
         extractor.extractUiAssetsIfMissing()
+        extractor.extractUserDefaultsIfMissing()
         extractor.extractDropbearIfMissing()
         jp.espresso3389.kugutz.db.PlainDbProvider.get(this)
         // Make sure we always have a CA bundle file in app-private storage before SSH sessions start.

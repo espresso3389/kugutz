@@ -65,6 +65,7 @@ class BrainRuntime:
                 "Use filesystem tools (list_dir/read_file/write_file/mkdir/move_path/delete_path) for file operations under the user root. "
                 "NEVER try to run `ls`/`pwd`/`cat` via a shell. For listing or reading files, ALWAYS use filesystem tools. "
                 "For running code/tools, use run_python/run_pip/run_uv/run_curl (not a generic shell). "
+                "For version checks: use run_python args='-V' or '--version'; run_curl args='--version'. "
                 "If a tool output says permission_required/permission_expired, stop and ask the user to approve in the app UI. "
                 "After tool outputs, provide a short, factual summary and include any relevant output snippets."
             ),
@@ -757,6 +758,18 @@ class BrainRuntime:
                 if not isinstance(args, dict):
                     args = {}
                 result = self._execute_function_tool(item, name, args)
+                # If a permission gate is hit, surface it immediately and stop.
+                if isinstance(result, dict) and str(result.get("status") or "") in {"permission_required", "permission_expired"}:
+                    req = result.get("request") if isinstance(result.get("request"), dict) else {}
+                    req_id = str(req.get("id") or "")
+                    tool = str(req.get("tool") or name or "unknown")
+                    self._record_message(
+                        "assistant",
+                        f"Permission required for tool '{tool}'. Approve it in the app UI and retry. request_id={req_id}",
+                        {"item_id": item.get("id")},
+                    )
+                    self._emit_log("brain_response", {"item_id": item.get("id"), "text": "permission_required"})
+                    return
                 pending_input.append(
                     {
                         "type": "function_call_output",

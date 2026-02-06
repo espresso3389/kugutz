@@ -525,6 +525,12 @@ def _tool_invoke_impl(
     request_id: str = None,
     detail: str = "",
 ) -> Dict:
+    # device_api performs its own permission flow via Kotlin /permissions/*.
+    if tool_name == "device_api":
+        result = tool_router.invoke(tool_name, args)
+        _emit_log("tool_invoked", {"tool": tool_name, "result": result})
+        return result
+
     if not request_id:
         request = _create_permission_request_sync(tool_name, detail=detail)
         return {"status": "permission_required", "request": request}

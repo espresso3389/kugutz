@@ -357,6 +357,12 @@ def _tool_invoke_impl(
     request_id: Optional[str] = None,
     detail: str = "",
 ) -> Dict:
+    # device_api performs its own permission flow via Kotlin /permissions/*.
+    if tool_name == "device_api":
+        result = TOOL_ROUTER.invoke(tool_name, args)
+        _emit_log("tool_invoked", {"tool": tool_name, "result": result})
+        return result
+
     if not request_id:
         request = _create_permission_request_sync(tool_name, detail=detail)
         return {"status": "permission_required", "request": request}
@@ -409,6 +415,23 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 limit = 50
             self._send_json({"messages": BRAIN_RUNTIME.list_messages(limit=limit)})
             return
+        if parsed.path.startswith("/vault/credentials/"):
+            name = parsed.path.removeprefix("/vault/credentials/").strip()
+            if not name:
+                self._send_json({"error": "missing_name"}, status=400)
+                return
+            row = STORAGE.get_credential(name)
+            if not row:
+                self._send_json({"error": "not_found"}, status=404)
+                return
+            self._send_json(
+                {
+                    "name": row.get("name"),
+                    "value": row.get("value"),
+                    "updated_at": row.get("updated_at"),
+                }
+            )
+            return
         self.send_response(404)
         self.end_headers()
 
@@ -455,7 +478,35 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(BRAIN_RUNTIME.enqueue_event(name=name, payload=body))
             return
+        if parsed.path.startswith("/vault/credentials/"):
+            name = parsed.path.removeprefix("/vault/credentials/").strip()
+            if not name:
+                self._send_json({"error": "missing_name"}, status=400)
+                return
+            value = str((payload or {}).get("value") or "")
+            STORAGE.set_credential(name, value)
+            row = STORAGE.get_credential(name) or {"name": name, "updated_at": _now_ms()}
+            self._send_json(
+                {
+                    "name": row.get("name"),
+                    "updated_at": row.get("updated_at"),
+                }
+            )
+            return
 
+        self.send_response(404)
+        self.end_headers()
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/vault/credentials/"):
+            name = parsed.path.removeprefix("/vault/credentials/").strip()
+            if not name:
+                self._send_json({"error": "missing_name"}, status=400)
+                return
+            STORAGE.delete_credential(name)
+            self._send_json({"status": "ok"})
+            return
         self.send_response(404)
         self.end_headers()
 

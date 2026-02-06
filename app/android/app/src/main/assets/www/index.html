@@ -171,6 +171,20 @@
         flex-shrink: 0;
       }
       .chat-input-area button:disabled { opacity: 0.5; cursor: default; }
+      .chat-mode {
+        display: flex;
+        align-items: center;
+      }
+      .chat-mode select {
+        border: 1px solid #d4c9b5;
+        border-radius: 10px;
+        background: var(--card);
+        color: var(--ink);
+        font-family: inherit;
+        font-size: 13px;
+        padding: 8px 10px;
+        outline: none;
+      }
 
       /* --- Settings page --- */
       .settings-header {
@@ -297,6 +311,12 @@
         </div>
       </div>
       <div class="chat-input-area">
+        <div class="chat-mode">
+          <select id="chatMode" title="Chat mode">
+            <option value="direct">Chat</option>
+            <option value="agent">Agent</option>
+          </select>
+        </div>
         <textarea id="chatInput" placeholder="Message..." rows="1"></textarea>
         <button id="chatSend" title="Send">&#9654;</button>
       </div>
@@ -518,9 +538,33 @@
       const chatMessages = $("chatMessages");
       const chatInput = $("chatInput");
       const chatSend = $("chatSend");
+      const chatMode = $("chatMode");
       const chatWelcome = $("chatWelcome");
+      const CHAT_STORAGE_KEY = "kugutz.chat.conversation.v1";
+      const CHAT_MODE_KEY = "kugutz.chat.mode.v1";
       let conversation = [];
       let streaming = false;
+
+      function saveConversation() {
+        try {
+          localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(conversation));
+        } catch (_) {}
+      }
+
+      function restoreConversation() {
+        try {
+          const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+          if (!raw) return;
+          const parsed = JSON.parse(raw);
+          if (!Array.isArray(parsed)) return;
+          conversation = parsed.filter(m =>
+            m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string"
+          );
+          for (const msg of conversation) {
+            addMsg(msg.role, msg.content);
+          }
+        } catch (_) {}
+      }
 
       function addMsg(role, content) {
         if (chatWelcome.parentNode) chatWelcome.remove();
@@ -545,6 +589,11 @@
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
       });
       chatSend.addEventListener("click", sendChat);
+      chatMode.value = localStorage.getItem(CHAT_MODE_KEY) || "direct";
+      chatMode.addEventListener("change", () => {
+        localStorage.setItem(CHAT_MODE_KEY, chatMode.value);
+      });
+      restoreConversation();
 
       async function sendChat() {
         if (streaming) return;
@@ -554,7 +603,13 @@
         autoResize();
 
         conversation.push({ role: "user", content: text });
+        saveConversation();
         addMsg("user", text);
+
+        if (chatMode.value === "agent") {
+          await sendAgentChat(text);
+          return;
+        }
 
         streaming = true;
         chatSend.disabled = true;
@@ -624,6 +679,7 @@
             if (cleaned) {
               aDiv.innerHTML = renderMarkdown(cleaned);
               conversation.push({ role: "assistant", content: cleaned });
+              saveConversation();
             } else {
               aDiv.remove();
             }
@@ -648,6 +704,92 @@
           streaming = false;
           chatSend.disabled = false;
         }
+      }
+
+      async function sendAgentChat(text) {
+        streaming = true;
+        chatSend.disabled = true;
+        const aDiv = addMsg("assistant", "_thinking..._");
+        try {
+          const boot = await fetch(API + "/brain/agent/bootstrap", {
+            method: "POST",
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+            body: "{}",
+          });
+          if (!boot.ok) {
+            const err = await boot.json().catch(() => ({}));
+            throw new Error(err.error || "Agent bootstrap failed (" + boot.status + ")");
+          }
+
+          const res = await fetch(API + "/brain/inbox/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify({ text, meta: { source: "chat_ui" } }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || "Agent queue failed (" + res.status + ")");
+          }
+          const queued = await res.json();
+          const itemId = queued.id || "";
+          if (!itemId) {
+            throw new Error("Agent item id missing");
+          }
+
+          const answer = await waitForAgentReply(itemId);
+          if (!answer) {
+            throw new Error("Agent timed out");
+          }
+          aDiv.innerHTML = renderMarkdown(answer);
+          conversation.push({ role: "assistant", content: answer });
+          saveConversation();
+        } catch (err) {
+          if (aDiv.parentNode) aDiv.remove();
+          const msg = err.message || "Agent request failed";
+          const friendly = {
+            "brain_not_configured": "Configure Brain in Settings first.",
+            "agent_vendor_not_supported": "Agent mode currently supports OpenAI-compatible providers only.",
+          };
+          addMsg("error", friendly[msg] || msg);
+        } finally {
+          streaming = false;
+          chatSend.disabled = false;
+        }
+      }
+
+      async function waitForAgentReply(itemId) {
+        const deadline = Date.now() + 60000;
+        let lastToolError = "";
+        while (Date.now() < deadline) {
+          const res = await fetch(API + "/brain/messages?limit=120");
+          if (!res.ok) {
+            await new Promise(r => setTimeout(r, 700));
+            continue;
+          }
+          const data = await res.json().catch(() => ({}));
+          const list = Array.isArray(data.messages) ? data.messages : [];
+          for (const msg of list) {
+            const meta = msg && msg.meta ? msg.meta : {};
+            if (meta.item_id !== itemId) continue;
+            if (msg.role === "assistant" && typeof msg.text === "string" && msg.text.trim()) {
+              return msg.text.trim();
+            }
+            if (msg.role === "tool" && typeof msg.text === "string") {
+              try {
+                const parsed = JSON.parse(msg.text);
+                const result = parsed && parsed.result ? parsed.result : {};
+                if (result.error) {
+                  lastToolError = result.error;
+                }
+              } catch (_) {}
+            }
+          }
+          await new Promise(r => setTimeout(r, 700));
+        }
+        if (lastToolError) {
+          throw new Error(lastToolError);
+        }
+        return "";
       }
 
       // ==============================

@@ -407,6 +407,9 @@ class LocalHttpServer(
                 val body = readBody(session)
                 handleBrainConfigSet(body)
             }
+            uri == "/brain/agent/bootstrap" && session.method == Method.POST -> {
+                handleBrainAgentBootstrap()
+            }
             uri == "/brain/chat" && session.method == Method.POST -> {
                 val body = readBody(session)
                 handleBrainChat(body)
@@ -656,6 +659,63 @@ class LocalHttpServer(
         }
         editor.apply()
         return handleBrainConfigGet()
+    }
+
+    private fun handleBrainAgentBootstrap(): Response {
+        val vendor = brainPrefs.getString("vendor", "")?.trim().orEmpty()
+        val baseUrl = brainPrefs.getString("base_url", "")?.trim()?.trimEnd('/').orEmpty()
+        val model = brainPrefs.getString("model", "")?.trim().orEmpty()
+        val apiKey = brainPrefs.getString("api_key", "")?.trim().orEmpty()
+
+        if (baseUrl.isEmpty() || model.isEmpty() || apiKey.isEmpty()) {
+            return jsonError(Response.Status.BAD_REQUEST, "brain_not_configured")
+        }
+        if (vendor == "anthropic") {
+            return jsonError(Response.Status.BAD_REQUEST, "agent_vendor_not_supported")
+        }
+
+        if (runtimeManager.getStatus() != "ok") {
+            runtimeManager.startWorker()
+            waitForPythonHealth(5000)
+        }
+
+        val credentialBody = JSONObject().put("value", apiKey).toString()
+        val setCred = proxyWorkerRequest("/vault/credentials/openai_api_key", "POST", credentialBody)
+            ?: return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_unavailable")
+        if (setCred.status != Response.Status.OK) {
+            return jsonError(Response.Status.INTERNAL_ERROR, "worker_credential_set_failed")
+        }
+
+        val providerUrl = if (vendor == "openai") {
+            if (baseUrl.endsWith("/responses")) baseUrl else "$baseUrl/responses"
+        } else {
+            if (baseUrl.endsWith("/chat/completions")) baseUrl else "$baseUrl/chat/completions"
+        }
+        val cfgBody = JSONObject()
+            .put("enabled", true)
+            .put("auto_start", true)
+            .put("provider_url", providerUrl)
+            .put("model", model)
+            .put("api_key_credential", "openai_api_key")
+            .toString()
+        val setCfg = proxyWorkerRequest("/brain/config", "POST", cfgBody)
+            ?: return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_unavailable")
+        if (setCfg.status != Response.Status.OK) {
+            return jsonError(Response.Status.INTERNAL_ERROR, "worker_config_set_failed")
+        }
+
+        val startResp = proxyWorkerRequest("/brain/start", "POST", "{}")
+            ?: return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_unavailable")
+        if (startResp.status != Response.Status.OK) {
+            return jsonError(Response.Status.INTERNAL_ERROR, "worker_start_failed")
+        }
+
+        return jsonResponse(
+            JSONObject()
+                .put("status", "ok")
+                .put("provider_url", providerUrl)
+                .put("model", model)
+        )
     }
 
     private fun handleBrainChat(body: String): Response {

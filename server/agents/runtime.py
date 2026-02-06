@@ -52,6 +52,8 @@ class BrainRuntime:
                 "Action types: shell_exec, write_file, tool_invoke, sleep. "
                 "For shell_exec, allowed cmd is only python, pip, uv, curl. "
                 "For write_file, paths must stay under the user root. "
+                "For tool_invoke, prefer device_api for local device actions "
+                "(python/ssh/shell/memory control via Kotlin local APIs). "
                 "Prefer uv/pip only when needed; avoid unnecessary installs. "
                 "For remote-device tasks, you may propose SSH/SCP setup/use steps, but do not execute "
                 "ssh/scp commands unless those commands are explicitly supported by available actions. "
@@ -256,28 +258,45 @@ class BrainRuntime:
             "recent_messages": history,
             "constraints": {
                 "allowed_commands": ["python", "pip", "uv"],
+                "device_api_actions": [
+                    "python.status",
+                    "python.restart",
+                    "ssh.status",
+                    "ssh.config",
+                    "ssh.pin.status",
+                    "ssh.pin.start",
+                    "ssh.pin.stop",
+                    "shell.exec",
+                    "brain.memory.get",
+                    "brain.memory.set",
+                ],
                 "root": str(self._user_dir),
             },
         }
-        body = {
-            "model": model,
-            "temperature": float(cfg.get("temperature", 0.2) or 0.2),
-            "messages": [
-                {"role": "system", "content": str(cfg.get("system_prompt") or "")},
-                {
-                    "role": "user",
-                    "content": (
-                        "Return strict JSON object with keys responses (string[]) and actions (object[]). "
-                        "Action objects: "
-                        "{type:'shell_exec', cmd:'python|pip|uv|curl', args:'...', cwd:'/subdir'} OR "
-                        "{type:'write_file', path:'relative/path.py', content:'...'} OR "
-                        "{type:'tool_invoke', tool:'filesystem|shell', args:{...}, request_id:'optional', detail:'optional'} OR "
-                        "{type:'sleep', seconds:1}. "
-                        "Input:\n" + json.dumps(user_payload)
-                    ),
-                },
-            ],
-        }
+        planner_prompt = (
+            "Return strict JSON object with keys responses (string[]) and actions (object[]). "
+            "Action objects: "
+            "{type:'shell_exec', cmd:'python|pip|uv|curl', args:'...', cwd:'/subdir'} OR "
+            "{type:'write_file', path:'relative/path.py', content:'...'} OR "
+            "{type:'tool_invoke', tool:'filesystem|shell|device_api', args:{...}, request_id:'optional', detail:'optional'} OR "
+            "{type:'sleep', seconds:1}. "
+            "Input:\n" + json.dumps(user_payload)
+        )
+        if provider_url.rstrip("/").endswith("/responses"):
+            body = {
+                "model": model,
+                "instructions": str(cfg.get("system_prompt") or ""),
+                "input": [{"role": "user", "content": planner_prompt}],
+            }
+        else:
+            body = {
+                "model": model,
+                "temperature": float(cfg.get("temperature", 0.2) or 0.2),
+                "messages": [
+                    {"role": "system", "content": str(cfg.get("system_prompt") or "")},
+                    {"role": "user", "content": planner_prompt},
+                ],
+            }
 
         resp = requests.post(
             provider_url,
@@ -291,14 +310,35 @@ class BrainRuntime:
         resp.raise_for_status()
         payload = resp.json()
         content = (
-            (((payload.get("choices") or [{}])[0]).get("message") or {}).get("content")
+            payload.get("output_text")
+            or (((payload.get("choices") or [{}])[0]).get("message") or {}).get("content")
             or "{}"
         )
+        if not isinstance(content, str):
+            content = "{}"
+            for item in payload.get("output") or []:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") != "message":
+                    continue
+                for part in item.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") == "output_text":
+                        content = str(part.get("text") or "")
+                        break
+                if content != "{}":
+                    break
         parsed = self._parse_json_object(content)
         if not isinstance(parsed, dict):
             return {"responses": ["Model response was not valid JSON."], "actions": []}
         parsed.setdefault("responses", [])
         parsed.setdefault("actions", [])
+        if not parsed.get("responses") and not parsed.get("actions"):
+            return {
+                "responses": [
+                    "Model returned no actionable plan. Please retry with a clearer request."
+                ],
+                "actions": [],
+            }
         return parsed
 
     def _parse_json_object(self, raw: str) -> Dict:

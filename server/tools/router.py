@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any, Dict
 
+from .device_api import DeviceApiTool
 from .filesystem import FilesystemTool
 from .shell import ShellTool
 
@@ -11,6 +12,7 @@ class ToolRouter:
         self.tools = {
             "filesystem": FilesystemTool(base_dir),
             "shell": ShellTool(),
+            "device_api": DeviceApiTool(),
         }
 
     def invoke(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:

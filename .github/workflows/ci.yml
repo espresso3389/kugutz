@@ -15,6 +15,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.2.1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -75,8 +78,7 @@ jobs:
         env:
           GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.workers.max=4"
         run: |
-          cd app/android
-          ./gradlew --parallel --build-cache assembleDebug
+          gradle --project-dir app/android --parallel --build-cache assembleDebug
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:

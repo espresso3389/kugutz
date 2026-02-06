@@ -29,6 +29,7 @@ class PythonRuntimeInstaller(private val context: Context) {
             storedVersion != currentVersion ||
             (assetStamp != null && assetStamp != installedStamp)
         if (!needsInstall) {
+            ensureStdlibZipAlias(pythonHome)
             ensurePythonBinaries()
             return true
         }
@@ -47,12 +48,47 @@ class PythonRuntimeInstaller(private val context: Context) {
                 writeInstalledStamp(pythonHome, assetStamp)
             }
             if (ok) {
+                ensureStdlibZipAlias(pythonHome)
                 ensurePythonBinaries()
             }
             ok
         } catch (ex: Exception) {
             Log.e(TAG, "Failed to install Python runtime", ex)
             false
+        }
+    }
+
+    /**
+     * pip build isolation rewrites PYTHONPATH and can drop our custom stdlib.zip entry.
+     * CPython still auto-adds $PYTHONHOME/lib/pythonXY?.zip, so create that zip as an alias
+     * of stdlib.zip to keep core modules (e.g. encodings) importable in subprocesses.
+     */
+    private fun ensureStdlibZipAlias(pythonHome: File) {
+        try {
+            val stdlibZip = File(pythonHome, "stdlib.zip")
+            if (!stdlibZip.exists() || stdlibZip.length() <= 0L) return
+
+            val libDir = File(pythonHome, "lib")
+            libDir.mkdirs()
+
+            // Find python version directory like lib/python3.11 and derive python311.zip.
+            val verDir = libDir.listFiles()?.firstOrNull { it.isDirectory && it.name.startsWith("python3.") }
+            val verName = verDir?.name ?: "python3.11"
+            val m = Regex("""python(\d+)\.(\d+)""").find(verName)
+            val major = m?.groupValues?.getOrNull(1) ?: "3"
+            val minor = m?.groupValues?.getOrNull(2) ?: "11"
+            val zipName = "python${major}${minor}.zip"
+            val target = File(libDir, zipName)
+
+            if (target.exists() && target.length() == stdlibZip.length()) return
+            val tmp = File(libDir, "$zipName.tmp")
+            stdlibZip.inputStream().use { input ->
+                tmp.outputStream().use { out -> input.copyTo(out) }
+            }
+            if (target.exists()) target.delete()
+            tmp.renameTo(target)
+        } catch (ex: Exception) {
+            Log.w(TAG, "Failed to ensure stdlib zip alias", ex)
         }
     }
 

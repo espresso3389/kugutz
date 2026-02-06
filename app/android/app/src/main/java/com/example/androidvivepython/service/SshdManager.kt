@@ -384,16 +384,19 @@ class SshdManager(private val context: Context) {
         if (!nativeFile.exists()) {
             return if (target.exists()) target else null
         }
-        if (target.exists()) {
-            target.setExecutable(true, true)
-            return target
-        }
         return try {
-            target.parentFile?.mkdirs()
-            nativeFile.inputStream().use { input ->
-                target.outputStream().use { output ->
-                    input.copyTo(output)
+            val needsRefresh = !target.exists() ||
+                target.length() != nativeFile.length() ||
+                target.lastModified() < nativeFile.lastModified()
+            if (needsRefresh) {
+                target.parentFile?.mkdirs()
+                nativeFile.inputStream().use { input ->
+                    target.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
                 }
+                // Keep mtime aligned so subsequent starts can skip copy.
+                target.setLastModified(nativeFile.lastModified())
             }
             target.setExecutable(true, true)
             target

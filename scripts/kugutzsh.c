@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -238,6 +239,74 @@ static int split_line(char *line, char **argv, int max_args) {
     return argc;
 }
 
+static void trim_trailing_ws(char *s) {
+    size_t n = strlen(s);
+    while (n > 0 && isspace((unsigned char)s[n - 1])) {
+        s[n - 1] = '\0';
+        n--;
+    }
+}
+
+static void extract_raw_args(const char *line, char *out, size_t out_len) {
+    if (!line || !out || out_len == 0) {
+        return;
+    }
+    const char *p = line;
+    while (*p && isspace((unsigned char)*p)) {
+        p++;
+    }
+    while (*p && !isspace((unsigned char)*p)) {
+        p++;
+    }
+    while (*p && isspace((unsigned char)*p)) {
+        p++;
+    }
+    snprintf(out, out_len, "%s", p);
+    trim_trailing_ws(out);
+}
+
+static int json_escape(const char *src, char *dst, size_t dst_len) {
+    size_t j = 0;
+    if (!src || !dst || dst_len == 0) {
+        return -1;
+    }
+    for (size_t i = 0; src[i] != '\0'; i++) {
+        unsigned char c = (unsigned char)src[i];
+        const char *rep = NULL;
+        char hex[7];
+        switch (c) {
+            case '\\': rep = "\\\\"; break;
+            case '\"': rep = "\\\""; break;
+            case '\b': rep = "\\b"; break;
+            case '\f': rep = "\\f"; break;
+            case '\n': rep = "\\n"; break;
+            case '\r': rep = "\\r"; break;
+            case '\t': rep = "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    snprintf(hex, sizeof(hex), "\\u%04x", c);
+                    rep = hex;
+                }
+                break;
+        }
+        if (rep) {
+            size_t rlen = strlen(rep);
+            if (j + rlen >= dst_len) {
+                return -1;
+            }
+            memcpy(dst + j, rep, rlen);
+            j += rlen;
+        } else {
+            if (j + 1 >= dst_len) {
+                return -1;
+            }
+            dst[j++] = (char)c;
+        }
+    }
+    dst[j] = '\0';
+    return 0;
+}
+
 static int http_post_json(const char *host, int port, const char *path, const char *json, char *out, size_t out_len) {
     struct sockaddr_in addr;
     int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -281,21 +350,23 @@ static int http_post_json(const char *host, int port, const char *path, const ch
     return 0;
 }
 
-static int cmd_python_or_pip(char **argv, int argc, const char *cwd) {
-    if (argc < 1) {
+static int cmd_python_or_pip(const char *cmd, const char *raw_args, const char *cwd) {
+    if (!cmd || cmd[0] == '\0') {
         return 1;
     }
-    char json[4096];
-    char args[2048] = {0};
-    for (int i = 1; i < argc; i++) {
-        if (i > 1) {
-            strncat(args, " ", sizeof(args) - strlen(args) - 1);
-        }
-        strncat(args, argv[i], sizeof(args) - strlen(args) - 1);
+    char cmd_esc[256];
+    char args_esc[4096];
+    char cwd_esc[PATH_MAX * 2];
+    if (json_escape(cmd, cmd_esc, sizeof(cmd_esc)) != 0 ||
+        json_escape(raw_args ? raw_args : "", args_esc, sizeof(args_esc)) != 0 ||
+        json_escape(cwd ? cwd : "", cwd_esc, sizeof(cwd_esc)) != 0) {
+        print_error("command too long");
+        return 1;
     }
+    char json[9216];
     snprintf(json, sizeof(json),
              "{ \"cmd\": \"%s\", \"args\": \"%s\", \"cwd\": \"%s\" }",
-             argv[0], args, cwd);
+             cmd_esc, args_esc, cwd_esc);
     char resp[8192];
     if (http_post_json("127.0.0.1", 8765, "/shell/exec", json, resp, sizeof(resp)) != 0) {
         print_error("failed to reach local shell service");
@@ -308,7 +379,8 @@ static int cmd_python_or_pip(char **argv, int argc, const char *cwd) {
     }
     body += 4;
     printf("%s", body);
-    if (body[strlen(body) - 1] != '\n') {
+    size_t body_len = strlen(body);
+    if (body_len == 0 || body[body_len - 1] != '\n') {
         printf("\n");
     }
     return 0;
@@ -332,6 +404,7 @@ int main() {
     cwd[sizeof(cwd) - 1] = '\0';
 
     char line[1024];
+    char line_raw[1024];
     char *argv[64];
 
     while (1) {
@@ -340,6 +413,8 @@ int main() {
         if (!fgets(line, sizeof(line), stdin)) {
             break;
         }
+        strncpy(line_raw, line, sizeof(line_raw) - 1);
+        line_raw[sizeof(line_raw) - 1] = '\0';
         int argc = split_line(line, argv, 64);
         if (argc == 0) {
             continue;
@@ -450,7 +525,9 @@ int main() {
             strncpy(cwd, resolved, sizeof(cwd) - 1);
             cwd[sizeof(cwd) - 1] = '\0';
         } else if (strcmp(cmd, "python") == 0 || strcmp(cmd, "pip") == 0 || strcmp(cmd, "uv") == 0 || strcmp(cmd, "curl") == 0) {
-            cmd_python_or_pip(argv, argc, cwd);
+            char raw_args[1024] = {0};
+            extract_raw_args(line_raw, raw_args, sizeof(raw_args));
+            cmd_python_or_pip(cmd, raw_args, cwd);
         } else {
             print_error("command not supported");
         }

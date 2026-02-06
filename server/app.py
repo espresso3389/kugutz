@@ -210,7 +210,12 @@ def _vault_request(command: str, name: str, payload: str = "") -> str:
 
 
 def _resolve_user_cwd(cwd: str) -> Path:
-    resolved = user_dir / cwd.lstrip("/") if cwd else user_dir
+    if not cwd:
+        resolved = user_dir
+    elif Path(cwd).is_absolute():
+        resolved = Path(cwd)
+    else:
+        resolved = user_dir / cwd.lstrip("/")
     try:
         resolved = resolved.resolve()
     except Exception:
@@ -232,17 +237,67 @@ def _resolve_user_file(workdir: Path, path: str) -> Path | None:
     return target
 
 
+def _render_write_out(template: str, meta: dict[str, str]) -> str:
+    template = template.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+    return re.sub(r"%\{([a-zA-Z0-9_]+)\}", lambda m: meta.get(m.group(1), ""), template)
+
+
+def _print_headers(status: int, reason: str, headers) -> None:
+    status_text = reason or ""
+    print(f"HTTP/1.1 {status} {status_text}".rstrip())
+    for key, value in headers:
+        print(f"{key}: {value}")
+    print()
+
+
+def _expand_short_flags(args: list[str]) -> list[str]:
+    expanded: list[str] = []
+    combinable = {"s", "S", "L", "f", "I", "i"}
+    for token in args:
+        if token.startswith("--") or not token.startswith("-") or len(token) <= 2:
+            expanded.append(token)
+            continue
+        chars = token[1:]
+        if all(ch in combinable for ch in chars):
+            expanded.extend([f"-{ch}" for ch in chars])
+            continue
+        expanded.append(token)
+    return expanded
+
+
 def _run_curl_args(args: list[str], workdir: Path) -> int:
+    args = _expand_short_flags(args)
     method = "GET"
     url = ""
     headers: list[tuple[str, str]] = []
     body_data: bytes | None = None
     output_file = ""
     head_only = False
+    include_headers = False
+    write_out = ""
+    silent = False
+    show_error = False
+    fail_mode = ""
     i = 0
     while i < len(args):
         token = args[i]
-        if token in {"-s", "--silent", "-L", "--location"}:
+        if token in {"-s", "--silent"}:
+            silent = True
+            i += 1
+            continue
+        if token in {"-S", "--show-error"}:
+            show_error = True
+            i += 1
+            continue
+        if token in {"-L", "--location"}:
+            i += 1
+            continue
+        if token in {"-f", "--fail"}:
+            fail_mode = "fail"
+            i += 1
+            continue
+        if token == "--fail-with-body":
+            fail_mode = "fail-with-body"
             i += 1
             continue
         if token in {"-I", "--head"}:
@@ -250,6 +305,14 @@ def _run_curl_args(args: list[str], workdir: Path) -> int:
             if method == "GET":
                 method = "HEAD"
             i += 1
+            continue
+        if token in {"-i", "--include"}:
+            include_headers = True
+            i += 1
+            continue
+        if token in {"-w", "--write-out"} and i + 1 < len(args):
+            write_out = args[i + 1]
+            i += 2
             continue
         if token in {"-X", "--request"} and i + 1 < len(args):
             method = args[i + 1].upper()
@@ -292,36 +355,78 @@ def _run_curl_args(args: list[str], workdir: Path) -> int:
 
     if not url:
         raise RuntimeError("missing_url")
+    discard_output = output_file == "/dev/null"
 
     req = urllib.request.Request(url, data=body_data, method=method)
     for key, value in headers:
         req.add_header(key, value)
 
+    status = 0
+    body_len = 0
+    start = time.monotonic()
+
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
+            status = int(getattr(resp, "status", 0) or 0)
+            reason = str(getattr(resp, "reason", "") or "")
+            if include_headers or head_only:
+                _print_headers(status, reason, resp.getheaders())
             if head_only:
-                print(f"HTTP {resp.status}")
-                for key, value in resp.getheaders():
-                    print(f"{key}: {value}")
-                return 0
-            data = resp.read()
-            if output_file:
+                body = b""
+            else:
+                body = resp.read()
+            body_len = len(body)
+            if discard_output:
+                pass
+            elif output_file:
                 target = _resolve_user_file(workdir, output_file)
                 if target is None:
                     raise RuntimeError("output_path_outside_user_root")
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
-                print(f"saved: {target}")
-            else:
-                print(data.decode("utf-8", errors="replace"), end="")
-        return 0
+                target.write_bytes(body)
+            elif not head_only:
+                print(body.decode("utf-8", errors="replace"), end="")
+        code = 0
     except urllib.error.HTTPError as ex:
-        payload = ex.read().decode("utf-8", errors="replace")
-        print(payload, end="")
-        return int(ex.code or 1)
+        status = int(ex.code or 0)
+        payload = ex.read()
+        body_len = len(payload)
+        if include_headers or head_only:
+            _print_headers(status, str(getattr(ex, "reason", "") or ""), list(ex.headers.items()))
+        if discard_output:
+            pass
+        elif output_file and payload:
+            target = _resolve_user_file(workdir, output_file)
+            if target is None:
+                raise RuntimeError("output_path_outside_user_root")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+        should_print_body = not head_only and not output_file and not discard_output and (fail_mode != "fail")
+        if should_print_body and payload:
+            print(payload.decode("utf-8", errors="replace"), end="")
+        if fail_mode in {"fail", "fail-with-body"}:
+            if (not silent) or show_error:
+                print(f"curl: (22) The requested URL returned error: {status}")
+            code = 22
+        else:
+            code = 0
     except Exception as ex:
-        print(f"error: {ex}")
-        return 1
+        if (not silent) or show_error:
+            print(f"curl: (1) {ex}")
+        status = 0
+        code = 1
+
+    if write_out:
+        elapsed = time.monotonic() - start
+        meta = {
+            "http_code": f"{status:03d}" if status > 0 else "000",
+            "response_code": f"{status:03d}" if status > 0 else "000",
+            "url_effective": url,
+            "size_download": str(body_len),
+            "time_total": f"{elapsed:.6f}",
+        }
+        print(_render_write_out(write_out, meta), end="")
+    return code
 
 
 def _shell_exec_impl(cmd: str, raw_args: str, cwd: str) -> Dict:

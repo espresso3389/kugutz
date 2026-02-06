@@ -627,6 +627,20 @@ class LocalHttpServer(
         return BRAIN_SYSTEM_PROMPT + if (memory.isEmpty()) "(empty)" else memory
     }
 
+    private fun buildWorkerSystemPrompt(): String {
+        // Passed to the Python worker brain (tool-calling runtime).
+        return listOf(
+            "You are Kugutz Brain running on an Android device. ",
+            "You have function tools for LOCAL execution; use them instead of describing actions. ",
+            "If the user asks for any device/file/state action, you MUST call tools (no pretending). ",
+            "Prefer device_api for device controls (python/ssh/shell/memory via Kotlin control plane). ",
+            "Use shell_exec only with cmd in {python,pip,uv,curl}. ",
+            "Use write_file only under the user root. ",
+            "If a tool output says permission_required/permission_expired, stop and ask the user to approve in the app UI. ",
+            "After tool outputs, provide a short, factual summary."
+        ).joinToString("")
+    }
+
     private fun handleBrainConfigGet(): Response {
         val vendor = brainPrefs.getString("vendor", "") ?: ""
         val baseUrl = brainPrefs.getString("base_url", "") ?: ""
@@ -698,6 +712,7 @@ class LocalHttpServer(
             .put("provider_url", providerUrl)
             .put("model", model)
             .put("api_key_credential", "openai_api_key")
+            .put("system_prompt", buildWorkerSystemPrompt())
             .toString()
         val setCfg = proxyWorkerRequest("/brain/config", "POST", cfgBody)
             ?: return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_unavailable")
@@ -1124,9 +1139,9 @@ class LocalHttpServer(
 ## Environment
 - Platform: Android (Kugutz CI app)
 - User home: ~/  (workspace for scripts and files)
-- Shell commands: python, pip, uv (via the app's terminal)
-- SSH server available for remote access
-- Permission broker controls sensitive operations (user must approve)
+- This chat does not directly execute local commands.
+- Device actions and state changes require explicit user approval via the app UI.
+- SSH server may be available for remote access depending on user settings.
 
 ## Memory
 You have a persistent memory file (MEMORY.md) that survives across conversations.

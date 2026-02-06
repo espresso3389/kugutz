@@ -225,7 +225,7 @@ static int cmd_mv(const char *src, const char *dst) {
 
 static void print_help() {
     printf("Supported commands:\n");
-    printf("  pwd, ls, cat, echo, mkdir, rm, cp, mv, touch, cd, whoami, python, pip, uv, help, exit\n");
+    printf("  pwd, ls, cat, echo, mkdir, rm, cp, mv, touch, cd, whoami, python, pip, uv, curl, help, exit\n");
 }
 
 static int split_line(char *line, char **argv, int max_args) {
@@ -449,7 +449,7 @@ int main() {
             }
             strncpy(cwd, resolved, sizeof(cwd) - 1);
             cwd[sizeof(cwd) - 1] = '\0';
-        } else if (strcmp(cmd, "python") == 0 || strcmp(cmd, "pip") == 0 || strcmp(cmd, "uv") == 0) {
+        } else if (strcmp(cmd, "python") == 0 || strcmp(cmd, "pip") == 0 || strcmp(cmd, "uv") == 0 || strcmp(cmd, "curl") == 0) {
             cmd_python_or_pip(argv, argc, cwd);
         } else {
             print_error("command not supported");

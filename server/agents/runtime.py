@@ -46,10 +46,17 @@ class BrainRuntime:
             "model": "",
             "api_key_credential": "openai_api_key",
             "system_prompt": (
-                "You are Kugutz Brain running on Android. Produce JSON only with "
-                "fields: responses (array of strings) and actions (array). "
-                "Available action types: shell_exec, write_file, tool_invoke, sleep. "
-                "Never use commands beyond python/pip/uv."
+                "You are Kugutz Brain running on Android. Return strict JSON only with keys "
+                "responses (string[]) and actions (object[]). "
+                "Use short, concrete responses and then actions. "
+                "Action types: shell_exec, write_file, tool_invoke, sleep. "
+                "For shell_exec, allowed cmd is only python, pip, uv, curl. "
+                "For write_file, paths must stay under the user root. "
+                "Prefer uv/pip only when needed; avoid unnecessary installs. "
+                "For remote-device tasks, you may propose SSH/SCP setup/use steps, but do not execute "
+                "ssh/scp commands unless those commands are explicitly supported by available actions. "
+                "If tool_invoke returns permission_required, respond with clear next step and stop. "
+                "Never assume hidden capabilities. Use only provided APIs and tools."
             ),
             "temperature": 0.2,
             "max_actions": 6,
@@ -262,7 +269,7 @@ class BrainRuntime:
                     "content": (
                         "Return strict JSON object with keys responses (string[]) and actions (object[]). "
                         "Action objects: "
-                        "{type:'shell_exec', cmd:'python|pip|uv', args:'...', cwd:'/subdir'} OR "
+                        "{type:'shell_exec', cmd:'python|pip|uv|curl', args:'...', cwd:'/subdir'} OR "
                         "{type:'write_file', path:'relative/path.py', content:'...'} OR "
                         "{type:'tool_invoke', tool:'filesystem|shell', args:{...}, request_id:'optional', detail:'optional'} OR "
                         "{type:'sleep', seconds:1}. "
@@ -323,7 +330,7 @@ class BrainRuntime:
             cmd = str(action.get("cmd") or "")
             args = str(action.get("args") or "")
             cwd = str(action.get("cwd") or "")
-            if cmd not in {"python", "pip", "uv"}:
+            if cmd not in {"python", "pip", "uv", "curl"}:
                 result = {"status": "error", "error": "command_not_allowed"}
             else:
                 result = self._shell_exec(cmd, args, cwd)

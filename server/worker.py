@@ -12,6 +12,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Dict, Optional
 from urllib.parse import parse_qs, urlparse
+import urllib.request
+import urllib.error
 
 from agents.runtime import BrainRuntime
 from storage.db import Storage
@@ -49,8 +51,112 @@ def _resolve_cwd(cwd: str) -> Path:
     return user_root
 
 
+def _resolve_user_file(workdir: Path, path: str) -> Path | None:
+    target = Path(path)
+    if not target.is_absolute():
+        target = (workdir / target).resolve()
+    else:
+        target = target.resolve()
+    root = USER_DIR.resolve()
+    if not str(target).startswith(str(root)):
+        return None
+    return target
+
+
+def _run_curl_args(args: list[str], workdir: Path) -> int:
+    method = "GET"
+    url = ""
+    headers: list[tuple[str, str]] = []
+    body_data: bytes | None = None
+    output_file = ""
+    head_only = False
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if token in {"-s", "--silent", "-L", "--location"}:
+            i += 1
+            continue
+        if token in {"-I", "--head"}:
+            head_only = True
+            if method == "GET":
+                method = "HEAD"
+            i += 1
+            continue
+        if token in {"-X", "--request"} and i + 1 < len(args):
+            method = args[i + 1].upper()
+            i += 2
+            continue
+        if token in {"-H", "--header"} and i + 1 < len(args):
+            raw = args[i + 1]
+            key, _, value = raw.partition(":")
+            headers.append((key.strip(), value.strip()))
+            i += 2
+            continue
+        if token in {"-d", "--data", "--data-raw"} and i + 1 < len(args):
+            body_data = args[i + 1].encode("utf-8")
+            if method == "GET":
+                method = "POST"
+            i += 2
+            continue
+        if token == "--json" and i + 1 < len(args):
+            body_data = args[i + 1].encode("utf-8")
+            if method == "GET":
+                method = "POST"
+            headers.append(("Content-Type", "application/json"))
+            i += 2
+            continue
+        if token in {"-o", "--output"} and i + 1 < len(args):
+            output_file = args[i + 1]
+            i += 2
+            continue
+        if token.startswith("http://") or token.startswith("https://"):
+            url = token
+            i += 1
+            continue
+        if token.startswith("-"):
+            raise RuntimeError(f"unsupported_option:{token}")
+        if not url:
+            url = token
+            i += 1
+            continue
+        raise RuntimeError(f"unexpected_argument:{token}")
+
+    if not url:
+        raise RuntimeError("missing_url")
+
+    req = urllib.request.Request(url, data=body_data, method=method)
+    for key, value in headers:
+        req.add_header(key, value)
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            if head_only:
+                print(f"HTTP {resp.status}")
+                for key, value in resp.getheaders():
+                    print(f"{key}: {value}")
+                return 0
+            data = resp.read()
+            if output_file:
+                target = _resolve_user_file(workdir, output_file)
+                if target is None:
+                    raise RuntimeError("output_path_outside_user_root")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+                print(f"saved: {target}")
+            else:
+                print(data.decode("utf-8", errors="replace"), end="")
+        return 0
+    except urllib.error.HTTPError as ex:
+        payload = ex.read().decode("utf-8", errors="replace")
+        print(payload, end="")
+        return int(ex.code or 1)
+    except Exception as ex:
+        print(f"error: {ex}")
+        return 1
+
+
 def _shell_exec_impl(cmd: str, raw_args: str, cwd: str) -> Dict:
-    if cmd not in {"python", "pip", "uv"}:
+    if cmd not in {"python", "pip", "uv", "curl"}:
         return {"status": "error", "error": "command_not_allowed"}
 
     workdir = _resolve_cwd(cwd)
@@ -95,6 +201,8 @@ def _shell_exec_impl(cmd: str, raw_args: str, cwd: str) -> Dict:
                 if uv_proc.stderr:
                     print(uv_proc.stderr, end="")
                 code = int(uv_proc.returncode)
+            elif cmd == "curl":
+                code = _run_curl_args(args, workdir)
             else:
                 if not args:
                     raise RuntimeError("interactive_not_supported")

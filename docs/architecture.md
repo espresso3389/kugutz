@@ -37,5 +37,6 @@ Android App (Kotlin)
 - SSH and permission APIs are now handled by Kotlin local service.
 - Python database usage will be phased out; Kotlin will own credential storage.
  - Credential vault access is gated by permissions + biometric prompt.
+- `third_party/libuvc` may appear as persistent local/untracked workspace noise; ignore it unless you are intentionally updating that submodule content.
 
 Note: Credential encryption keys live in Android Keystore and are removed on app uninstall. Vault data is not intended to be portable or backed up.

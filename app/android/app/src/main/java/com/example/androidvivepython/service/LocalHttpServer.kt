@@ -447,8 +447,20 @@ class LocalHttpServer(
         val cmd = payload.optString("cmd")
         val args = payload.optString("args", "")
         val cwd = payload.optString("cwd", "")
-        if (cmd != "python" && cmd != "pip" && cmd != "uv") {
+        if (cmd != "python" && cmd != "pip" && cmd != "uv" && cmd != "curl") {
             return jsonError(Response.Status.FORBIDDEN, "command_not_allowed")
+        }
+
+        if (cmd == "curl") {
+            if (runtimeManager.getStatus() != "ok") {
+                runtimeManager.startWorker()
+                waitForPythonHealth(5000)
+            }
+            val proxied = proxyShellExecToWorker(cmd, args, cwd)
+            if (proxied != null) {
+                return proxied
+            }
+            return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_unavailable")
         }
 
         val pythonExe = resolvePythonBinary()

@@ -713,7 +713,9 @@
       }
 
       async function waitForAgentReply(itemId) {
-        const deadline = Date.now() + 60000;
+        // Some tool calls (pip installs, large downloads) can legitimately take minutes.
+        // Keep the UI polling longer to avoid premature "Agent timed out".
+        const deadline = Date.now() + 15 * 60 * 1000;
         let lastToolError = "";
         while (Date.now() < deadline) {
           const res = await fetch(

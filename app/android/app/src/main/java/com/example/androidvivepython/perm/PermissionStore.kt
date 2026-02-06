@@ -43,6 +43,24 @@ class PermissionStore(context: Context) {
         return dao.getById(id)?.toModel()
     }
 
+    fun findLatestApproved(identity: String, tool: String, capability: String): PermissionRequest? {
+        val ident = identity.trim()
+        if (ident.isBlank()) return null
+        val t = tool.trim()
+        if (t.isBlank()) return null
+        val cap = capability.trim()
+        return dao.findLatestApproved(ident, t, cap)?.toModel()
+    }
+
+    fun findLatestPending(identity: String, tool: String, capability: String): PermissionRequest? {
+        val ident = identity.trim()
+        if (ident.isBlank()) return null
+        val t = tool.trim()
+        if (t.isBlank()) return null
+        val cap = capability.trim()
+        return dao.findLatestPending(ident, t, cap)?.toModel()
+    }
+
     data class PermissionRequest(
         val id: String,
         val tool: String,

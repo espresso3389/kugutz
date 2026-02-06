@@ -7,12 +7,12 @@ from typing import Any, Dict, Optional
 
 
 BASE_URL = "http://127.0.0.1:8765"
-_IDENTITY = (os.environ.get("KUGUTZ_IDENTITY") or os.environ.get("KUGUTZ_SESSION_ID") or "").strip()
+_IDENTITY = (os.environ.get("KUGUTZ_IDENTITY") or os.environ.get("KUGUTZ_SESSION_ID") or "").strip() or "default"
 
 
 def set_identity(identity: str) -> None:
     global _IDENTITY
-    _IDENTITY = str(identity or "").strip()
+    _IDENTITY = str(identity or "").strip() or "default"
 
 
 def _request_json(

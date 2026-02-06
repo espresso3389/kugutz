@@ -43,6 +43,8 @@ class BrainRuntime:
         # Cache capability -> permission_id so the model doesn't need to remember ids.
         # This is session-scoped (in-memory) and resets when the brain restarts.
         self._capability_permissions: Dict[str, str] = {}
+        # Used to tag Kotlin permission requests so approvals can be reused per chat session.
+        self._active_identity: str = ""
 
         self._config = self._load_config()
 
@@ -914,6 +916,7 @@ class BrainRuntime:
 
     def _process_with_responses_tools(self, item: Dict) -> None:
         session_id = self._session_id_for_item(item)
+        self._active_identity = session_id or "default"
         persistent_memory = self._get_persistent_memory()
         dialogue = self._list_dialogue(session_id=session_id, limit=30)
         # _process_item already recorded the current user message; don't duplicate it in the prompt.
@@ -1487,9 +1490,18 @@ class BrainRuntime:
             permission_id = self._capability_permissions.get(capability, "")
 
             def do_request(pid: str) -> tuple[int, Dict[str, Any]]:
+                headers = {}
+                if self._active_identity:
+                    headers["X-Kugutz-Identity"] = self._active_identity
                 resp = requests.post(
                     "http://127.0.0.1:8765/web/search",
-                    json={"query": query, "max_results": max_results, "permission_id": (pid or "")},
+                    json={
+                        "query": query,
+                        "max_results": max_results,
+                        "permission_id": (pid or ""),
+                        "identity": self._active_identity,
+                    },
+                    headers=headers,
                     timeout=15,
                 )
                 body = resp.json() if resp.content else {}

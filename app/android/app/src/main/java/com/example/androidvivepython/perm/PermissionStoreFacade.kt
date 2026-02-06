@@ -11,6 +11,68 @@ class PermissionStoreFacade(context: Context) {
     private val fallback = InMemoryPermissionStore()
     private val dbAvailable = AtomicBoolean(true)
 
+    fun findReusableApproved(
+        tool: String,
+        scope: String,
+        identity: String,
+        capability: String = ""
+    ): PermissionStore.PermissionRequest? {
+        val ident = identity.trim()
+        if (ident.isBlank()) return null
+        val now = System.currentTimeMillis()
+        fun isStillValid(req: PermissionStore.PermissionRequest): Boolean {
+            if (req.status != "approved") return false
+            val existingRank = scopeRank(req.scope)
+            val requestedRank = scopeRank(scope)
+            if (existingRank < requestedRank) return false
+            val ttlMs = ttlMsForScope(req.scope)
+            return ttlMs <= 0L || (now - req.createdAt) <= ttlMs
+        }
+
+        return try {
+            val latest = if (dbAvailable.get()) {
+                dbStore.findLatestApproved(ident, tool, capability)
+            } else {
+                fallback.findLatestApproved(ident, tool, capability)
+            }
+            if (latest != null && isStillValid(latest)) latest else null
+        } catch (ex: Throwable) {
+            Log.e(TAG, "Permission DB unavailable, falling back", ex)
+            dbAvailable.set(false)
+            val latest = fallback.findLatestApproved(ident, tool, capability)
+            if (latest != null && isStillValid(latest)) latest else null
+        }
+    }
+
+    fun findRecentPending(
+        tool: String,
+        identity: String,
+        capability: String = "",
+        maxAgeMs: Long = 2L * 60L * 1000L
+    ): PermissionStore.PermissionRequest? {
+        val ident = identity.trim()
+        if (ident.isBlank()) return null
+        val now = System.currentTimeMillis()
+        fun isStillPending(req: PermissionStore.PermissionRequest): Boolean {
+            if (req.status != "pending") return false
+            return (now - req.createdAt) <= maxAgeMs
+        }
+
+        return try {
+            val latest = if (dbAvailable.get()) {
+                dbStore.findLatestPending(ident, tool, capability)
+            } else {
+                fallback.findLatestPending(ident, tool, capability)
+            }
+            if (latest != null && isStillPending(latest)) latest else null
+        } catch (ex: Throwable) {
+            Log.e(TAG, "Permission DB unavailable, falling back", ex)
+            dbAvailable.set(false)
+            val latest = fallback.findLatestPending(ident, tool, capability)
+            if (latest != null && isStillPending(latest)) latest else null
+        }
+    }
+
     fun create(
         tool: String,
         detail: String,
@@ -116,9 +178,54 @@ class PermissionStoreFacade(context: Context) {
         fun get(id: String): PermissionStore.PermissionRequest? {
             return items[id]
         }
+
+        fun findLatestApproved(
+            identity: String,
+            tool: String,
+            capability: String
+        ): PermissionStore.PermissionRequest? {
+            return items.values
+                .asSequence()
+                .filter { it.status == "approved" }
+                .filter { it.identity == identity && it.tool == tool && it.capability == capability }
+                .maxByOrNull { it.createdAt }
+        }
+
+        fun findLatestPending(
+            identity: String,
+            tool: String,
+            capability: String
+        ): PermissionStore.PermissionRequest? {
+            return items.values
+                .asSequence()
+                .filter { it.status == "pending" }
+                .filter { it.identity == identity && it.tool == tool && it.capability == capability }
+                .maxByOrNull { it.createdAt }
+        }
     }
 
     companion object {
         private const val TAG = "PermissionStoreFacade"
+
+        private fun scopeRank(scope: String): Int {
+            return when (scope.trim()) {
+                "once" -> 0
+                "program" -> 1
+                "session" -> 2
+                "persistent" -> 3
+                else -> 1
+            }
+        }
+
+        private fun ttlMsForScope(scope: String): Long {
+            return when (scope.trim()) {
+                "persistent" -> 0L
+                "session" -> 60L * 60L * 1000L
+                "program" -> 10L * 60L * 1000L
+                // "once" should not be auto-reused; treat as expired immediately.
+                "once" -> -1L
+                else -> 10L * 60L * 1000L
+            }
+        }
     }
 }

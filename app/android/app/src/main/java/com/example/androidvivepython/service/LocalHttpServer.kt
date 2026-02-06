@@ -114,6 +114,45 @@ class LocalHttpServer(
                 val capabilityFromTool = if (tool.startsWith("device.")) tool.removePrefix("device.").trim() else ""
                 val capability = payload.optString("capability", "").trim().ifBlank { capabilityFromTool }
 
+                if (identity.isNotBlank() && scope != "once") {
+                    val pending = permissionStore.findRecentPending(
+                        tool = tool,
+                        identity = identity,
+                        capability = capability
+                    )
+                    if (pending != null) {
+                        return jsonResponse(
+                            JSONObject()
+                                .put("id", pending.id)
+                                .put("status", pending.status)
+                                .put("tool", pending.tool)
+                                .put("detail", pending.detail)
+                                .put("scope", pending.scope)
+                                .put("identity", pending.identity)
+                                .put("capability", pending.capability)
+                        )
+                    }
+
+                    val reusable = permissionStore.findReusableApproved(
+                        tool = tool,
+                        scope = scope,
+                        identity = identity,
+                        capability = capability
+                    )
+                    if (reusable != null) {
+                        return jsonResponse(
+                            JSONObject()
+                                .put("id", reusable.id)
+                                .put("status", reusable.status)
+                                .put("tool", reusable.tool)
+                                .put("detail", reusable.detail)
+                                .put("scope", reusable.scope)
+                                .put("identity", reusable.identity)
+                                .put("capability", reusable.capability)
+                        )
+                    }
+                }
+
                 val req = permissionStore.create(
                     tool = tool,
                     detail = detail,
@@ -338,7 +377,7 @@ class LocalHttpServer(
                 val body = postBody ?: ""
                 val payload = runCatching { JSONObject(body) }.getOrNull()
                     ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_json")
-                return handleWebSearch(payload)
+                return handleWebSearch(session, payload)
             }
             uri == "/ssh/status" -> {
                 val status = sshdManager.status()
@@ -621,20 +660,35 @@ class LocalHttpServer(
         }
     }
 
-    private fun handleWebSearch(payload: JSONObject): Response {
+    private fun handleWebSearch(session: IHTTPSession, payload: JSONObject): Response {
         val q = payload.optString("q", payload.optString("query", "")).trim()
         if (q.isBlank()) {
             return jsonError(Response.Status.BAD_REQUEST, "query_required")
         }
         val maxResults = payload.optInt("max_results", payload.optInt("limit", 5)).coerceIn(1, 10)
-        val permissionId = payload.optString("permission_id", "")
+        val headerIdentity = (session.headers["x-kugutz-identity"] ?: "").trim()
+        val identity = payload.optString("identity", "").trim().ifBlank { headerIdentity }
+        var permissionId = payload.optString("permission_id", "")
+
+        if (!isPermissionApproved(permissionId, consume = true) && identity.isNotBlank()) {
+            val reusable = permissionStore.findReusableApproved(
+                tool = "network",
+                scope = "session",
+                identity = identity,
+                capability = "web.search"
+            )
+            if (reusable != null) {
+                permissionId = reusable.id
+            }
+        }
+
         if (!isPermissionApproved(permissionId, consume = true)) {
             val req = permissionStore.create(
                 tool = "network",
                 detail = "DuckDuckGo search: " + q.take(200),
                 // Searching is typically iterative; don't re-prompt for every query.
                 scope = "session",
-                identity = "",
+                identity = identity,
                 capability = "web.search"
             )
             sendPermissionPrompt(req.id, req.tool, req.detail, false)

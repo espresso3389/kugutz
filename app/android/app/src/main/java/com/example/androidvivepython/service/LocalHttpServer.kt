@@ -627,6 +627,110 @@ class LocalHttpServer(
             return newFixedLengthResponse(Response.Status.FORBIDDEN, "application/json", out.toString())
         }
 
+        // Provider selection:
+        // - auto: use a real web-search API if configured (currently Mojeek), otherwise fall back
+        //   to DuckDuckGo Instant Answer API (not a real web search API).
+        val provider = payload.optString("provider", "auto").trim().ifBlank { "auto" }.lowercase()
+        val hasMojeekKey = credentialStore.get("mojeek_api_key")?.value?.isNotBlank() == true
+        val useMojeek = when (provider) {
+            "auto" -> hasMojeekKey
+            "mojeek" -> true
+            else -> false
+        }
+
+        if (useMojeek) {
+            val keyRow = credentialStore.get("mojeek_api_key")
+            val apiKey = (keyRow?.value ?: "").trim()
+            if (apiKey.isBlank()) {
+                return jsonError(
+                    Response.Status.BAD_REQUEST,
+                    "missing_mojeek_api_key",
+                    JSONObject().put("hint", "Store a 'mojeek_api_key' credential in vault to enable Mojeek web search.")
+                )
+            }
+
+            return try {
+                val isJapanese = Regex("[\\p{InHiragana}\\p{InKatakana}\\p{InCJK_Unified_Ideographs}]").containsMatchIn(q)
+                val lb = if (isJapanese) "JA" else "EN"
+                val rb = if (isJapanese) "JP" else "US"
+                val url = java.net.URL(
+                    "https://api.mojeek.com/search?" +
+                        "q=" + java.net.URLEncoder.encode(q, "UTF-8") +
+                        "&api_key=" + java.net.URLEncoder.encode(apiKey, "UTF-8") +
+                        "&fmt=json" +
+                        "&t=" + maxResults +
+                        // Apply gentle language/location boosting; users can override by providing provider-specific
+                        // parameters later if we expose them.
+                        "&lb=" + lb + "&lbb=100" +
+                        "&rb=" + rb + "&rbb=10"
+                )
+                val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 8000
+                    readTimeout = 12000
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty(
+                        "Accept-Language",
+                        if (isJapanese) "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5" else "en-US,en;q=0.9"
+                    )
+                }
+                val stream =
+                    if (conn.responseCode in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
+                val body = stream.bufferedReader().use { it.readText() }
+                if (conn.responseCode !in 200..299) {
+                    return jsonError(
+                        Response.Status.SERVICE_UNAVAILABLE,
+                        "upstream_error",
+                        JSONObject().put("status", conn.responseCode).put("detail", body.take(400))
+                    )
+                }
+
+                val parsed = JSONObject(body.ifBlank { "{}" })
+                val resp = parsed.optJSONObject("response") ?: JSONObject()
+                val status = resp.optString("status", "")
+                if (status != "OK") {
+                    return jsonError(
+                        Response.Status.SERVICE_UNAVAILABLE,
+                        "upstream_error",
+                        JSONObject().put("detail", status.ifBlank { "unknown_error" })
+                    )
+                }
+
+                val results = org.json.JSONArray()
+                val arr = resp.optJSONArray("results") ?: org.json.JSONArray()
+                for (i in 0 until arr.length()) {
+                    if (results.length() >= maxResults) break
+                    val r = arr.optJSONObject(i) ?: continue
+                    val u = r.optString("url", "").trim()
+                    val title = r.optString("title", "").trim()
+                    val desc = r.optString("desc", "").trim()
+                    if (u.isBlank() || title.isBlank()) continue
+                    results.put(
+                        JSONObject()
+                            .put("title", title)
+                            .put("url", u)
+                            .put("snippet", desc.ifBlank { title })
+                    )
+                }
+
+                jsonResponse(
+                    JSONObject()
+                        .put("status", "ok")
+                        .put("provider", "mojeek_search_api")
+                        .put("query", q)
+                        .put(
+                            "abstract",
+                            JSONObject().put("heading", "").put("text", "").put("url", "")
+                        )
+                        .put("results", results)
+                )
+            } catch (ex: java.net.SocketTimeoutException) {
+                jsonError(Response.Status.SERVICE_UNAVAILABLE, "upstream_timeout")
+            } catch (ex: Exception) {
+                jsonError(Response.Status.INTERNAL_ERROR, "search_failed", JSONObject().put("detail", ex.message ?: ""))
+            }
+        }
+
         // DuckDuckGo Instant Answer API (best-effort; not a full web search API).
         // https://api.duckduckgo.com/?q=...&format=json&no_html=1&skip_disambig=1
         return try {
@@ -640,6 +744,7 @@ class LocalHttpServer(
                 connectTimeout = 8000
                 readTimeout = 12000
                 setRequestProperty("Accept", "application/json")
+                setRequestProperty("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5")
             }
             val stream = if (conn.responseCode in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
             val body = stream.bufferedReader().use { it.readText() }
@@ -693,6 +798,55 @@ class LocalHttpServer(
                 .put("heading", heading)
                 .put("text", abstractText)
                 .put("url", abstractUrl)
+
+            // DuckDuckGo IA frequently returns empty results (HTTP 202) for many queries,
+            // especially non-English. As a fallback, use the autocomplete endpoint to produce
+            // clickable "search result" links for suggestions.
+            if (results.length() == 0 && abstractText.isBlank() && heading.isBlank()) {
+                val suggestions = org.json.JSONArray()
+                try {
+                    val sugUrl = java.net.URL(
+                        "https://duckduckgo.com/ac/?" +
+                            "q=" + java.net.URLEncoder.encode(q, "UTF-8") +
+                            "&type=list"
+                    )
+                    val sugConn = (sugUrl.openConnection() as java.net.HttpURLConnection).apply {
+                        requestMethod = "GET"
+                        connectTimeout = 8000
+                        readTimeout = 12000
+                        setRequestProperty("Accept", "application/json")
+                        setRequestProperty("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5")
+                    }
+                    val sugStream =
+                        if (sugConn.responseCode in 200..299) sugConn.inputStream else (sugConn.errorStream ?: sugConn.inputStream)
+                    val sugBody = sugStream.bufferedReader().use { it.readText() }
+                    if (sugConn.responseCode in 200..299) {
+                        val arr = org.json.JSONArray(sugBody.ifBlank { "[]" })
+                        // Format: ["query", ["s1","s2",...]]
+                        val list = arr.optJSONArray(1)
+                        if (list != null) {
+                            for (i in 0 until list.length()) {
+                                if (suggestions.length() >= maxResults) break
+                                val s = (list.optString(i, "") ?: "").trim()
+                                if (s.isBlank()) continue
+                                val u = "https://duckduckgo.com/?q=" + java.net.URLEncoder.encode(s, "UTF-8")
+                                suggestions.put(JSONObject().put("title", s).put("url", u).put("snippet", s))
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+                if (suggestions.length() > 0) {
+                    return jsonResponse(
+                        JSONObject()
+                            .put("status", "ok")
+                            .put("provider", "duckduckgo_autocomplete_fallback")
+                            .put("query", q)
+                            .put("abstract", abstractObj)
+                            .put("results", suggestions)
+                    )
+                }
+            }
 
             jsonResponse(
                 JSONObject()

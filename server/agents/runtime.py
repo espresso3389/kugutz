@@ -77,6 +77,8 @@ class BrainRuntime:
             ),
             "temperature": 0.2,
             "max_actions": 6,
+            # Max tool-loop rounds for providers that support responses-style tool calling.
+            "max_tool_rounds": 12,
             "idle_sleep_ms": 800,
         }
 

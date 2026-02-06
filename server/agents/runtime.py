@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import threading
 import time
@@ -45,6 +46,11 @@ class BrainRuntime:
             "provider_url": "https://api.openai.com/v1/chat/completions",
             "model": "",
             "api_key_credential": "openai_api_key",
+            # Optional: allow the brain to read API keys from process env as a fallback
+            # when vault storage isn't available (e.g., local dev on a build machine).
+            # If empty, runtime uses a provider-based default mapping, e.g.:
+            # openai_api_key -> OPENAI_API_KEY
+            "api_key_env": "",
             "system_prompt": (
                 "You are Kugutz Brain running on Android. "
                 "Primary protocol: use provided function tools for local execution. "
@@ -60,6 +66,33 @@ class BrainRuntime:
             "max_actions": 6,
             "idle_sleep_ms": 800,
         }
+
+    def _env_key_name_for_credential(self, credential_name: str) -> str:
+        # Keep mapping explicit (avoid guessing) but cover common providers.
+        name = (credential_name or "").strip().lower()
+        if not name:
+            return ""
+        if name in {"openai_api_key", "openai.key", "openai"}:
+            return "OPENAI_API_KEY"
+        if name in {"anthropic_api_key", "anthropic.key", "anthropic"}:
+            return "ANTHROPIC_API_KEY"
+        if name in {"kimi_api_key", "kimi.key", "moonshot_api_key", "moonshot.key"}:
+            return "KIMI_API_KEY"
+        return ""
+
+    def _get_api_key(self, key_name: str) -> str:
+        # 1) Primary path: local vault credential.
+        key_row = self._storage.get_credential(key_name)
+        api_key = (key_row or {}).get("value", "")
+        if api_key:
+            return str(api_key)
+
+        # 2) Fallback path: env var (explicit override in config if set).
+        env_override = str(self._config.get("api_key_env") or "").strip()
+        env_name = env_override or self._env_key_name_for_credential(key_name)
+        if not env_name:
+            return ""
+        return str(os.environ.get(env_name) or "")
 
     def _load_config(self) -> Dict:
         raw = self._storage.get_setting("brain.config.v1")
@@ -333,12 +366,11 @@ class BrainRuntime:
             )
             return
 
-        key_row = self._storage.get_credential(key_name)
-        api_key = (key_row or {}).get("value", "")
+        api_key = self._get_api_key(key_name)
         if not api_key:
             self._record_message(
                 "assistant",
-                f"Missing API credential '{key_name}'. Set it in vault, then continue.",
+                f"Missing API credential '{key_name}'. Set it in vault or provide env var, then continue.",
                 {"item_id": item.get("id")},
             )
             return
@@ -359,11 +391,11 @@ class BrainRuntime:
                 "model": model,
                 "tools": tools,
                 "input": pending_input,
+                # Keep instructions on every round; some models drift once the tool loop begins.
+                "instructions": str(cfg.get("system_prompt") or ""),
             }
             if previous_response_id:
                 body["previous_response_id"] = previous_response_id
-            else:
-                body["instructions"] = str(cfg.get("system_prompt") or "")
 
             resp = requests.post(
                 provider_url,
@@ -522,12 +554,11 @@ class BrainRuntime:
                 "actions": [],
             }
 
-        key_row = self._storage.get_credential(key_name)
-        api_key = (key_row or {}).get("value", "")
+        api_key = self._get_api_key(key_name)
         if not api_key:
             return {
                 "responses": [
-                    f"Missing API credential '{key_name}'. Set it in vault, then continue."
+                    f"Missing API credential '{key_name}'. Set it in vault or provide env var, then continue."
                 ],
                 "actions": [],
             }

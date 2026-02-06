@@ -67,7 +67,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
         raw_args = str(payload.get("args", "") or "")
         cwd = str(payload.get("cwd", "") or "")
 
-        if cmd not in {"python", "pip"}:
+        if cmd not in {"python", "pip", "uv"}:
             self._send_json({"error": "command_not_allowed"}, status=403)
             return
 
@@ -89,6 +89,29 @@ class WorkerHandler(BaseHTTPRequestHandler):
                         except Exception:
                             from pip._internal import main as pip_main  # type: ignore
                     code = int(pip_main(args) or 0)
+                elif cmd == "uv":
+                    uv_cmd = [sys.executable, "-m", "uv", *args]
+                    uv_proc = subprocess.run(uv_cmd, cwd=str(workdir), capture_output=True, text=True)
+                    uv_output = (uv_proc.stdout or "") + (uv_proc.stderr or "")
+                    if uv_proc.returncode != 0 and "No module named uv" in uv_output:
+                        install_proc = subprocess.run(
+                            [sys.executable, "-m", "pip", "install", "uv"],
+                            cwd=str(workdir),
+                            capture_output=True,
+                            text=True,
+                        )
+                        if install_proc.returncode == 0:
+                            uv_proc = subprocess.run(uv_cmd, cwd=str(workdir), capture_output=True, text=True)
+                        else:
+                            if install_proc.stdout:
+                                print(install_proc.stdout, end="")
+                            if install_proc.stderr:
+                                print(install_proc.stderr, end="")
+                    if uv_proc.stdout:
+                        print(uv_proc.stdout, end="")
+                    if uv_proc.stderr:
+                        print(uv_proc.stderr, end="")
+                    code = int(uv_proc.returncode)
                 else:
                     if not args:
                         raise RuntimeError("interactive_not_supported")

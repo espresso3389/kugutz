@@ -249,7 +249,7 @@ async def shell_exec(payload: Dict):
     cmd = payload.get("cmd", "")
     raw_args = payload.get("args", "") or ""
     cwd = payload.get("cwd", "") or ""
-    if cmd not in {"python", "pip"}:
+    if cmd not in {"python", "pip", "uv"}:
         raise HTTPException(status_code=403, detail="command_not_allowed")
 
     resolved = user_dir / cwd.lstrip("/") if cwd else user_dir
@@ -272,6 +272,29 @@ async def shell_exec(payload: Dict):
                 except Exception:
                     from pip._internal import main as pip_main  # type: ignore
                 exit_code = pip_main(args)
+            elif cmd == "uv":
+                uv_cmd = [sys.executable, "-m", "uv", *args]
+                uv_proc = subprocess.run(uv_cmd, cwd=str(resolved), capture_output=True, text=True)
+                uv_output = (uv_proc.stdout or "") + (uv_proc.stderr or "")
+                if uv_proc.returncode != 0 and "No module named uv" in uv_output:
+                    install_proc = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "uv"],
+                        cwd=str(resolved),
+                        capture_output=True,
+                        text=True,
+                    )
+                    if install_proc.returncode == 0:
+                        uv_proc = subprocess.run(uv_cmd, cwd=str(resolved), capture_output=True, text=True)
+                    else:
+                        if install_proc.stdout:
+                            print(install_proc.stdout, end="")
+                        if install_proc.stderr:
+                            print(install_proc.stderr, end="")
+                if uv_proc.stdout:
+                    print(uv_proc.stdout, end="")
+                if uv_proc.stderr:
+                    print(uv_proc.stderr, end="")
+                exit_code = int(uv_proc.returncode)
             else:
                 if not args:
                     raise RuntimeError("interactive_not_supported")

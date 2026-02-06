@@ -421,7 +421,7 @@ class LocalHttpServer(
         val cmd = payload.optString("cmd")
         val args = payload.optString("args", "")
         val cwd = payload.optString("cwd", "")
-        if (cmd != "python" && cmd != "pip") {
+        if (cmd != "python" && cmd != "pip" && cmd != "uv") {
             return jsonError(Response.Status.FORBIDDEN, "command_not_allowed")
         }
 
@@ -443,6 +443,7 @@ class LocalHttpServer(
         val argList = if (args.isBlank()) emptyList() else args.split(Regex("\\s+"))
         val command = when (cmd) {
             "pip" -> listOf(pythonExe.absolutePath, "-m", "pip") + argList
+            "uv" -> listOf(pythonExe.absolutePath, "-m", "uv") + argList
             else -> listOf(pythonExe.absolutePath) + argList
         }
 
@@ -450,27 +451,40 @@ class LocalHttpServer(
         val pyenvDir = File(context.filesDir, "pyenv")
         val serverDir = File(context.filesDir, "server")
         return try {
-            val pb = ProcessBuilder(command)
-            pb.directory(resolvedCwd)
-            pb.redirectErrorStream(true)
-            pb.environment()["KUGUTZ_PYENV"] = pyenvDir.absolutePath
-            pb.environment()["KUGUTZ_NATIVELIB"] = nativeLibDir
-            pb.environment()["LD_LIBRARY_PATH"] = nativeLibDir
-            pb.environment()["PYTHONHOME"] = pyenvDir.absolutePath
-            pb.environment()["PYTHONPATH"] = listOf(
-                serverDir.absolutePath,
-                "${pyenvDir.absolutePath}/site-packages",
-                "${pyenvDir.absolutePath}/modules",
-                "${pyenvDir.absolutePath}/stdlib.zip"
-            ).joinToString(":")
-            val proc = pb.start()
-            val output = proc.inputStream.bufferedReader().readText()
-            val code = proc.waitFor()
+            fun runPythonCommand(cmdline: List<String>): Pair<Int, String> {
+                val pb = ProcessBuilder(cmdline)
+                pb.directory(resolvedCwd)
+                pb.redirectErrorStream(true)
+                pb.environment()["KUGUTZ_PYENV"] = pyenvDir.absolutePath
+                pb.environment()["KUGUTZ_NATIVELIB"] = nativeLibDir
+                pb.environment()["LD_LIBRARY_PATH"] = nativeLibDir
+                pb.environment()["PYTHONHOME"] = pyenvDir.absolutePath
+                pb.environment()["PYTHONPATH"] = listOf(
+                    serverDir.absolutePath,
+                    "${pyenvDir.absolutePath}/site-packages",
+                    "${pyenvDir.absolutePath}/modules",
+                    "${pyenvDir.absolutePath}/stdlib.zip"
+                ).joinToString(":")
+                val proc = pb.start()
+                val output = proc.inputStream.bufferedReader().readText()
+                val code = proc.waitFor()
+                return Pair(code, output)
+            }
+
+            var result = runPythonCommand(command)
+            if (cmd == "uv" && result.first != 0 && result.second.contains("No module named uv")) {
+                val install = runPythonCommand(listOf(pythonExe.absolutePath, "-m", "pip", "install", "uv"))
+                result = if (install.first == 0) {
+                    runPythonCommand(command)
+                } else {
+                    Pair(result.first, result.second + "\nuv bootstrap failed:\n" + install.second)
+                }
+            }
             jsonResponse(
                 JSONObject()
                     .put("status", "ok")
-                    .put("code", code)
-                    .put("output", output)
+                    .put("code", result.first)
+                    .put("output", result.second)
             )
         } catch (ex: Exception) {
             jsonError(Response.Status.INTERNAL_ERROR, "exec_failed", JSONObject().put("detail", ex.message ?: ""))

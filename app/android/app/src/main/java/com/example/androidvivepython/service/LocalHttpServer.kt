@@ -472,7 +472,8 @@ class LocalHttpServer(
             }
 
             var result = runPythonCommand(command)
-            if (cmd == "uv" && result.first != 0 && result.second.contains("No module named uv")) {
+            val uvMissingPattern = Regex("No module named ['\\\"]?uv['\\\"]?")
+            if (cmd == "uv" && result.first != 0 && uvMissingPattern.containsMatchIn(result.second)) {
                 val install = runPythonCommand(listOf(pythonExe.absolutePath, "-m", "pip", "install", "uv"))
                 result = if (install.first == 0) {
                     runPythonCommand(command)

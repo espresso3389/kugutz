@@ -7,6 +7,8 @@ import io
 import runpy
 import shlex
 import sys
+import subprocess
+import re
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -93,7 +95,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
                     uv_cmd = [sys.executable, "-m", "uv", *args]
                     uv_proc = subprocess.run(uv_cmd, cwd=str(workdir), capture_output=True, text=True)
                     uv_output = (uv_proc.stdout or "") + (uv_proc.stderr or "")
-                    if uv_proc.returncode != 0 and "No module named uv" in uv_output:
+                    if uv_proc.returncode != 0 and re.search(r"No module named ['\"]?uv['\"]?", uv_output):
                         install_proc = subprocess.run(
                             [sys.executable, "-m", "pip", "install", "uv"],
                             cwd=str(workdir),

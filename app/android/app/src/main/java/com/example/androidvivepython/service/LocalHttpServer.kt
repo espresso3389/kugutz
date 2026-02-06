@@ -260,7 +260,14 @@ class LocalHttpServer(
                     method = "POST",
                     body = body
                 )
-                proxied ?: jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_unavailable")
+                if (proxied == null) {
+                    return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_unavailable")
+                }
+                if (uri == "/brain/inbox/chat" && proxied.status == Response.Status.BAD_REQUEST) {
+                    // Help diagnose UI issues; keep it short and avoid logging secrets.
+                    Log.w(TAG, "brain/inbox/chat 400 body.len=${body.length} body.head=${body.take(120)}")
+                }
+                proxied
             }
             (uri == "/shell/exec" || uri == "/shell/exec/") -> {
                 if (session.method != Method.POST) {
@@ -594,7 +601,9 @@ class LocalHttpServer(
                 val out = body ?: "{}"
                 conn.outputStream.use { it.write(out.toByteArray(Charsets.UTF_8)) }
             }
-            val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
+            // Some servers may not populate errorStream; fall back to inputStream so callers
+            // still receive a meaningful error body.
+            val stream = if (conn.responseCode in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
             val responseBody = stream?.bufferedReader()?.use { it.readText() } ?: "{}"
             newFixedLengthResponse(
                 Response.Status.lookup(conn.responseCode) ?: Response.Status.OK,

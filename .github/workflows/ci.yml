@@ -29,6 +29,7 @@ jobs:
             cmake \
             gettext \
             libtool-bin \
+            libltdl-dev \
             m4 \
             libtool \
             ninja-build \
@@ -41,16 +42,13 @@ jobs:
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Install Gradle
+        run: |
+          curl -fsSL -o /tmp/gradle-8.2.1-bin.zip https://services.gradle.org/distributions/gradle-8.2.1-bin.zip
+          sudo unzip -q -o /tmp/gradle-8.2.1-bin.zip -d /opt
+          echo "/opt/gradle-8.2.1/bin" >> "$GITHUB_PATH"
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-      - name: Cache Android SDK/NDK
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.ANDROID_SDK_ROOT }}
-          key: ${{ runner.os }}-androidsdk-34-ndk-29.0.14206865
-          restore-keys: |
-            ${{ runner.os }}-androidsdk-34-
       - name: Install Android NDK
         run: |
           yes | sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;29.0.14206865"
@@ -74,8 +72,7 @@ jobs:
         env:
           GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.workers.max=4"
         run: |
-          cd app/android
-          ./gradlew --parallel --build-cache assembleDebug
+          gradle --project-dir app/android --parallel --build-cache assembleDebug
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:

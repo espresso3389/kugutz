@@ -10,7 +10,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
+      - name: Prepare third_party sources
+        run: |
+          set -euo pipefail
+          git submodule sync --recursive
+          git -c protocol.version=2 submodule update --init --depth=1 third_party/libusb third_party/libuvc
+          if ! git -c protocol.version=2 submodule update --init --depth=1 third_party/dropbear; then
+            echo "Falling back to dropbear default branch because pinned submodule commit is unavailable"
+            rm -rf third_party/dropbear
+            git clone --depth 1 https://github.com/espresso3389/dropbear.git third_party/dropbear
+          fi
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

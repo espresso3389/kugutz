@@ -32,25 +32,36 @@
       .page { display: none; flex: 1; flex-direction: column; overflow: hidden; }
       .page.active { display: flex; }
 
-      /* --- Bottom nav --- */
-      .bottom-nav {
-        display: flex;
-        border-top: 1px solid var(--border);
-        background: var(--card);
+      /* --- Top bar --- */
+      .topbar {
         flex-shrink: 0;
+        height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 10px 0 14px;
+        border-bottom: 1px solid var(--border);
+        background: var(--card);
       }
-      .bottom-nav button {
-        flex: 1;
-        padding: 12px 8px;
-        border: none;
-        background: transparent;
-        font-family: inherit;
-        font-size: 13px;
-        font-weight: 700;
-        color: var(--muted);
+      .topbar .title {
+        font-weight: 800;
+        letter-spacing: 0.2px;
+      }
+      .icon-btn {
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.65);
         cursor: pointer;
+        display: grid;
+        place-items: center;
+        font-size: 18px;
       }
-      .bottom-nav button.active { color: var(--accent); }
+      .icon-btn:active { transform: scale(0.98); }
+      .icon-btn.secondary {
+        background: transparent;
+      }
 
       /* --- Chat page --- */
       .chat-messages {
@@ -290,7 +301,6 @@
       .toast.show { opacity: 1; }
 
       @media (max-width: 640px) {
-        .settings-header { padding: 12px 16px 6px; }
         .grid { padding: 8px 16px 24px; }
         .card { padding: 14px; }
         .row { justify-content: flex-start; }
@@ -304,6 +314,10 @@
   <body>
     <!-- ===== Chat Page ===== -->
     <div id="chatPage" class="page active">
+      <div class="topbar">
+        <div class="title">Kugutz</div>
+        <button class="icon-btn" id="openSettingsBtn" title="Settings" aria-label="Settings">&#9881;</button>
+      </div>
       <div class="chat-messages" id="chatMessages">
         <div class="chat-welcome" id="chatWelcome">
           <strong>Kugutz Brain</strong><br>
@@ -319,7 +333,11 @@
 
     <!-- ===== Settings Page ===== -->
     <div id="settingsPage" class="page">
-      <div class="settings-header">Settings</div>
+      <div class="topbar">
+        <button class="icon-btn secondary" id="backToChatBtn" title="Back" aria-label="Back">&#8592;</button>
+        <div class="title">Settings</div>
+        <div style="width:36px;"></div>
+      </div>
       <div class="grid">
         <!-- Brain Config -->
         <section class="card">
@@ -352,8 +370,12 @@
             </div>
           </div>
           <div class="field">
-            <label>API Key</label>
-            <input type="password" id="brainApiKey" placeholder="sk-..." />
+            <label>Current API Key (plaintext)</label>
+            <input type="text" id="brainApiKeyCurrent" placeholder="(locked)" readonly />
+          </div>
+          <div class="field">
+            <label>Set API Key (plaintext)</label>
+            <input type="text" id="brainApiKey" placeholder="sk-..." />
             <div class="muted" id="brainKeyStatus" style="margin-top:4px;"></div>
           </div>
           <div style="margin-top:12px;">
@@ -368,8 +390,12 @@
             Default provider is DuckDuckGo. Brave Search is used only when an API key is configured here.
           </div>
           <div class="field">
-            <label>Brave Search API Key</label>
-            <input type="password" id="braveSearchApiKey" placeholder="(optional)" />
+            <label>Current Brave Key (plaintext)</label>
+            <input type="text" id="braveSearchApiKeyCurrent" placeholder="(locked)" readonly />
+          </div>
+          <div class="field">
+            <label>Set Brave Key (plaintext)</label>
+            <input type="text" id="braveSearchApiKey" placeholder="(optional)" />
             <div class="muted" id="braveSearchKeyStatus" style="margin-top:4px;">Status unknown.</div>
           </div>
           <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
@@ -462,12 +488,6 @@
     <!-- Toast -->
     <div class="toast" id="toast"></div>
 
-    <!-- Bottom Navigation -->
-    <nav class="bottom-nav">
-      <button class="active" data-page="chatPage">Chat</button>
-      <button data-page="settingsPage">Settings</button>
-    </nav>
-
     <script>
       // ==============================
       // Helpers
@@ -487,22 +507,101 @@
       // ==============================
       function navigateTo(pageId) {
         document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
-        document.querySelectorAll(".bottom-nav button").forEach(b => b.classList.remove("active"));
         $(pageId).classList.add("active");
-        document.querySelector('[data-page="' + pageId + '"]').classList.add("active");
       }
       function handleHash() {
         const h = location.hash.replace("#", "") || "chat";
-        navigateTo(h === "settings" ? "settingsPage" : "chatPage");
-        if (h === "settings" && typeof loadMemory === "function") loadMemory();
+        if (h === "settings") {
+          guardedOpenSettings();
+        } else {
+          navigateTo("chatPage");
+        }
       }
-      document.querySelectorAll(".bottom-nav button").forEach(btn => {
-        btn.addEventListener("click", () => {
-          location.hash = btn.dataset.page === "settingsPage" ? "settings" : "chat";
-        });
-      });
       window.addEventListener("hashchange", handleHash);
       handleHash();
+
+      $("openSettingsBtn").addEventListener("click", () => {
+        location.hash = "settings";
+      });
+      $("backToChatBtn").addEventListener("click", () => {
+        location.hash = "chat";
+      });
+
+      let pendingSettingsUnlock = null;
+      function getSettingsUnlockRemainingMs() {
+        try {
+          if (typeof AndroidBridge !== "undefined" && AndroidBridge.getSettingsUnlockRemainingMs) {
+            const v = Number(AndroidBridge.getSettingsUnlockRemainingMs());
+            return isFinite(v) ? Math.max(0, v) : 0;
+          }
+        } catch (_) {}
+        return 0;
+      }
+
+      function requestSettingsUnlock() {
+        if (pendingSettingsUnlock) return pendingSettingsUnlock;
+        pendingSettingsUnlock = new Promise((resolve) => {
+          window.__resolveSettingsUnlock = resolve;
+          try {
+            if (typeof AndroidBridge !== "undefined" && AndroidBridge.requestSettingsUnlock) {
+              AndroidBridge.requestSettingsUnlock();
+            } else {
+              resolve({ ok: true, remaining_ms: 30000, fallback: true });
+            }
+          } catch (_) {
+            resolve({ ok: false });
+          }
+        }).finally(() => { pendingSettingsUnlock = null; });
+        return pendingSettingsUnlock;
+      }
+
+      // Called by Kotlin after biometric completes.
+      window.onSettingsUnlockResult = function(payload) {
+        try {
+          if (window.__resolveSettingsUnlock) {
+            window.__resolveSettingsUnlock(payload || { ok: false });
+            window.__resolveSettingsUnlock = null;
+          }
+        } catch (_) {}
+      };
+
+      function refreshSecretsFromBridge() {
+        const locked = getSettingsUnlockRemainingMs() <= 0;
+        if (locked) {
+          $("brainApiKeyCurrent").value = "";
+          $("brainApiKeyCurrent").placeholder = "(locked)";
+          $("braveSearchApiKeyCurrent").value = "";
+          $("braveSearchApiKeyCurrent").placeholder = "(locked)";
+          return;
+        }
+        try {
+          if (typeof AndroidBridge !== "undefined" && AndroidBridge.getBrainApiKeyPlain) {
+            $("brainApiKeyCurrent").value = AndroidBridge.getBrainApiKeyPlain() || "";
+          }
+        } catch (_) {}
+        try {
+          if (typeof AndroidBridge !== "undefined" && AndroidBridge.getBraveSearchApiKeyPlain) {
+            $("braveSearchApiKeyCurrent").value = AndroidBridge.getBraveSearchApiKeyPlain() || "";
+          }
+        } catch (_) {}
+      }
+
+      async function guardedOpenSettings() {
+        // Enforce biometric gate for Settings. Cache is handled on Android side (30s).
+        if (getSettingsUnlockRemainingMs() <= 0) {
+          const r = await requestSettingsUnlock();
+          if (!r || !r.ok) {
+            showToast("Settings locked", 1600);
+            location.hash = "chat";
+            return;
+          }
+        }
+        navigateTo("settingsPage");
+        refreshSecretsFromBridge();
+        if (typeof loadMemory === "function") loadMemory();
+        if (typeof checkBraveSearchKey === "function") checkBraveSearchKey();
+        if (typeof loadBrainConfig === "function") loadBrainConfig();
+      }
 
       // ==============================
       // Markdown renderer (minimal)
@@ -913,6 +1012,16 @@
       async function checkBraveSearchKey() {
         try {
           $("braveSearchKeyStatus").textContent = "Checking...";
+          // Prefer biometric-unlocked plaintext status to avoid extra permission prompts.
+          try {
+            if (getSettingsUnlockRemainingMs() > 0
+                && typeof AndroidBridge !== "undefined"
+                && AndroidBridge.getBraveSearchApiKeyPlain) {
+              const k = (AndroidBridge.getBraveSearchApiKeyPlain() || "").trim();
+              $("braveSearchKeyStatus").textContent = k ? "API key is set." : "No API key configured.";
+              return;
+            }
+          } catch (_) {}
           const permission_id = await requestPermission("credentials", "Check Brave Search API key status");
           const res = await fetch(API + "/vault/credentials/has", {
             method: "POST",

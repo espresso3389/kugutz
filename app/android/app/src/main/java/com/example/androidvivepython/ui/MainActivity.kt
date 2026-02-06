@@ -163,6 +163,10 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "UI reset applied", Toast.LENGTH_SHORT).show()
     }
 
+    fun evalJs(js: String) {
+        webView.post { webView.evaluateJavascript(js, null) }
+    }
+
     private fun handlePermissionPrompt(id: String, tool: String, detail: String, forceBiometric: Boolean) {
         val broker = jp.espresso3389.kugutz.perm.PermissionBroker(this)
         broker.requestConsent(tool, detail, forceBiometric) { approved ->

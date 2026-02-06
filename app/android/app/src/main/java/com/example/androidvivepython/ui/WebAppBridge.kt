@@ -1,14 +1,25 @@
 package jp.espresso3389.kugutz.ui
 
-import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.webkit.JavascriptInterface
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import jp.espresso3389.kugutz.perm.CredentialStore
 import jp.espresso3389.kugutz.service.AgentService
 
-class WebAppBridge(private val activity: Activity) {
+class WebAppBridge(private val activity: MainActivity) {
     private val handler = Handler(Looper.getMainLooper())
+    private val credentialStore = CredentialStore(activity)
+    private val brainPrefs = activity.getSharedPreferences("brain_config", Context.MODE_PRIVATE)
+
+    @Volatile
+    private var settingsUnlockedUntilMs: Long = 0L
+
+    private val settingsUnlockTimeoutMs = 30_000L
 
     @JavascriptInterface
     fun startPythonWorker() {
@@ -42,10 +53,77 @@ class WebAppBridge(private val activity: Activity) {
         handler.post {
             val extractor = jp.espresso3389.kugutz.service.AssetExtractor(activity)
             extractor.resetUiAssets()
-            if (activity is MainActivity) {
-                activity.reloadUi()
-            }
+            activity.reloadUi()
         }
+    }
+
+    @JavascriptInterface
+    fun getSettingsUnlockRemainingMs(): Long {
+        val rem = settingsUnlockedUntilMs - System.currentTimeMillis()
+        return if (rem > 0) rem else 0L
+    }
+
+    @JavascriptInterface
+    fun requestSettingsUnlock() {
+        handler.post {
+            val rem = getSettingsUnlockRemainingMs()
+            if (rem > 0) {
+                activity.evalJs("window.onSettingsUnlockResult && window.onSettingsUnlockResult({ok:true,remaining_ms:${rem}})")
+                return@post
+            }
+
+            val manager = BiometricManager.from(activity)
+            val canAuth = manager.canAuthenticate(
+                BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                    BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            )
+            if (canAuth != BiometricManager.BIOMETRIC_SUCCESS) {
+                activity.evalJs("window.onSettingsUnlockResult && window.onSettingsUnlockResult({ok:false,error:'biometric_unavailable'})")
+                return@post
+            }
+
+            val executor = ContextCompat.getMainExecutor(activity)
+            val prompt = BiometricPrompt(
+                activity,
+                executor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        settingsUnlockedUntilMs = System.currentTimeMillis() + settingsUnlockTimeoutMs
+                        val r = getSettingsUnlockRemainingMs()
+                        activity.evalJs("window.onSettingsUnlockResult && window.onSettingsUnlockResult({ok:true,remaining_ms:${r}})")
+                    }
+
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        activity.evalJs("window.onSettingsUnlockResult && window.onSettingsUnlockResult({ok:false,error:'auth_error'})")
+                    }
+
+                    override fun onAuthenticationFailed() {
+                        // Ignore; user can retry.
+                    }
+                }
+            )
+            val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                .setTitle("Unlock settings")
+                .setSubtitle("View and edit API keys")
+                .setAllowedAuthenticators(
+                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                )
+                .build()
+            prompt.authenticate(promptInfo)
+        }
+    }
+
+    @JavascriptInterface
+    fun getBrainApiKeyPlain(): String {
+        if (getSettingsUnlockRemainingMs() <= 0) return ""
+        return brainPrefs.getString("api_key", "")?.trim().orEmpty()
+    }
+
+    @JavascriptInterface
+    fun getBraveSearchApiKeyPlain(): String {
+        if (getSettingsUnlockRemainingMs() <= 0) return ""
+        return credentialStore.get("brave_search_api_key")?.value?.trim().orEmpty()
     }
 
     @JavascriptInterface

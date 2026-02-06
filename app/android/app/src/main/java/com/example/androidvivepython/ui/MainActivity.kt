@@ -98,6 +98,28 @@ class MainActivity : AppCompatActivity() {
 
         // Load the local UI served by Kotlin.
         webView.loadUrl("http://127.0.0.1:8765/ui/index.html")
+
+        // If launched from a permission notification, handle it immediately.
+        maybeHandlePermissionIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        maybeHandlePermissionIntent(intent)
+    }
+
+    private fun maybeHandlePermissionIntent(intent: Intent?) {
+        val id = intent?.getStringExtra(LocalHttpServer.EXTRA_PERMISSION_ID) ?: return
+        val tool = intent.getStringExtra(LocalHttpServer.EXTRA_PERMISSION_TOOL) ?: return
+        val detail = intent.getStringExtra(LocalHttpServer.EXTRA_PERMISSION_DETAIL) ?: ""
+        val forceBio = intent.getBooleanExtra(LocalHttpServer.EXTRA_PERMISSION_BIOMETRIC, false)
+        // Clear extras so we don't re-trigger on rotation or process recreation.
+        intent.removeExtra(LocalHttpServer.EXTRA_PERMISSION_ID)
+        intent.removeExtra(LocalHttpServer.EXTRA_PERMISSION_TOOL)
+        intent.removeExtra(LocalHttpServer.EXTRA_PERMISSION_DETAIL)
+        intent.removeExtra(LocalHttpServer.EXTRA_PERMISSION_BIOMETRIC)
+        handlePermissionPrompt(id, tool, detail, forceBio)
     }
 
     override fun onStart() {

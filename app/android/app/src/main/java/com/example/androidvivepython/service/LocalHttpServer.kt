@@ -122,17 +122,15 @@ class LocalHttpServer(
                     capability = capability
                 )
                 // Permission UX:
-                // - Always prompt immediately for sensitive actions where the user expects an interrupt.
-                // - Device permissions need both in-app consent and often Android runtime permissions.
-                val isDeviceTool = tool.startsWith("device.") || tool == "device_api"
-                if (tool == "credentials" || tool == "ssh_keys" || tool == "ssh_pin" || isDeviceTool) {
-                    val forceBio = when (tool) {
-                        "ssh_keys" -> sshKeyPolicy.isBiometricRequired()
-                        "ssh_pin" -> true
-                        else -> false
-                    }
-                    sendPermissionPrompt(req.id, tool, detail, forceBio)
+                // - Always prompt: the client can't complete without user action, and agent flows
+                //   otherwise look like "silent" failures.
+                // - Some tools additionally require biometric or Android runtime permissions.
+                val forceBio = when (tool) {
+                    "ssh_keys" -> sshKeyPolicy.isBiometricRequired()
+                    "ssh_pin" -> true
+                    else -> false
                 }
+                sendPermissionPrompt(req.id, tool, detail, forceBio)
                 jsonResponse(
                     JSONObject()
                         .put("id", req.id)

@@ -361,6 +361,24 @@
           </div>
         </section>
 
+        <!-- Web Search -->
+        <section class="card">
+          <div class="label">Web Search</div>
+          <div class="muted" style="margin:4px 0 10px;">
+            Default provider is DuckDuckGo. Brave Search is used only when an API key is configured here.
+          </div>
+          <div class="field">
+            <label>Brave Search API Key</label>
+            <input type="password" id="braveSearchApiKey" placeholder="(optional)" />
+            <div class="muted" id="braveSearchKeyStatus" style="margin-top:4px;">Status unknown.</div>
+          </div>
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn primary" id="braveSearchSave">Save</button>
+            <button class="btn" id="braveSearchClear">Clear</button>
+            <button class="btn" id="braveSearchCheck">Check</button>
+          </div>
+        </section>
+
         <!-- Memory -->
         <section class="card">
           <div class="label">Memory</div>
@@ -888,6 +906,63 @@
       });
 
       loadMemory();
+
+      // ==============================
+      // Web Search Keys
+      // ==============================
+      async function checkBraveSearchKey() {
+        try {
+          $("braveSearchKeyStatus").textContent = "Checking...";
+          const permission_id = await requestPermission("credentials", "Check Brave Search API key status");
+          const res = await fetch(API + "/vault/credentials/has", {
+            method: "POST",
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify({ name: "brave_search_api_key", permission_id }),
+          });
+          if (!res.ok) throw 0;
+          const data = await res.json();
+          $("braveSearchKeyStatus").textContent = data.present ? "API key is set." : "No API key configured.";
+        } catch (_) {
+          $("braveSearchKeyStatus").textContent = "Failed to check status.";
+        }
+      }
+
+      $("braveSearchCheck").addEventListener("click", checkBraveSearchKey);
+      $("braveSearchSave").addEventListener("click", async () => {
+        const key = $("braveSearchApiKey").value.trim();
+        if (!key) { showToast("Enter a key (or Clear)"); return; }
+        try {
+          const permission_id = await requestPermission("credentials", "Set Brave Search API key");
+          const res = await fetch(API + "/vault/credentials", {
+            method: "POST",
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify({ name: "brave_search_api_key", value: key, permission_id }),
+          });
+          if (!res.ok) throw 0;
+          $("braveSearchApiKey").value = "";
+          showToast("Brave key saved");
+          await checkBraveSearchKey();
+        } catch (_) {
+          showToast("Failed to save key");
+        }
+      });
+
+      $("braveSearchClear").addEventListener("click", async () => {
+        try {
+          const permission_id = await requestPermission("credentials", "Clear Brave Search API key");
+          const res = await fetch(API + "/vault/credentials", {
+            method: "POST",
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify({ name: "brave_search_api_key", value: "", permission_id }),
+          });
+          if (!res.ok) throw 0;
+          $("braveSearchApiKey").value = "";
+          showToast("Brave key cleared");
+          await checkBraveSearchKey();
+        } catch (_) {
+          showToast("Failed to clear key");
+        }
+      });
 
       // ==============================
       // Settings: SSHD, Python, etc.

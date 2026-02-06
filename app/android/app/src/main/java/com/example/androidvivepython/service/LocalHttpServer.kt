@@ -257,6 +257,32 @@ class LocalHttpServer(
                         .put("updated_at", row.updatedAt)
                 )
             }
+            uri == "/vault/credentials/has" && session.method == Method.POST -> {
+                val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                val name = payload.optString("name", "")
+                val permissionId = payload.optString("permission_id", "")
+                if (permissionId.isBlank()) {
+                    return jsonError(Response.Status.BAD_REQUEST, "permission_id_required")
+                }
+                if (!isPermissionApproved(permissionId, consume = false)) {
+                    return jsonError(Response.Status.FORBIDDEN, "permission_required")
+                }
+                val nameTrimmed = name.trim()
+                if (nameTrimmed.isBlank()) {
+                    return jsonError(Response.Status.BAD_REQUEST, "name_required")
+                }
+                if (nameTrimmed.length > 128) {
+                    return jsonError(Response.Status.BAD_REQUEST, "name_too_long")
+                }
+                val row = credentialStore.get(nameTrimmed)
+                jsonResponse(
+                    JSONObject()
+                        .put("status", "ok")
+                        .put("name", nameTrimmed)
+                        .put("present", row != null && row.value.trim().isNotEmpty())
+                        .put("updated_at", row?.updatedAt ?: 0)
+                )
+            }
             uri == "/builtins/tts" && session.method == Method.POST -> {
                 return jsonError(Response.Status.NOT_IMPLEMENTED, "not_implemented", JSONObject().put("feature", "tts"))
             }
@@ -628,19 +654,111 @@ class LocalHttpServer(
         }
 
         // Provider selection:
-        // - auto: use a real web-search API if configured (currently Mojeek), otherwise fall back
-        //   to DuckDuckGo Instant Answer API (not a real web search API).
+        // - auto (default): use Brave Search API only if the user configured an API key, else fall back to DuckDuckGo
+        //   Instant Answer API (not a real web search API).
+        // - brave: always use Brave Search API (requires API key)
+        // - mojeek: optional alternative (requires API key)
+        // - duckduckgo/ddg: force Instant Answer API
         val provider = payload.optString("provider", "auto").trim().ifBlank { "auto" }.lowercase()
-        val hasMojeekKey = credentialStore.get("mojeek_api_key")?.value?.isNotBlank() == true
+        val braveKey =
+            (credentialStore.get("brave_search_api_key")?.value ?: credentialStore.get("brave_api_key")?.value ?: "").trim()
+        val mojeekKey = (credentialStore.get("mojeek_api_key")?.value ?: "").trim()
+        val isBraveConfigured = braveKey.isNotBlank()
+
+        val useBrave = when (provider) {
+            "auto" -> isBraveConfigured
+            "brave" -> true
+            else -> false
+        }
         val useMojeek = when (provider) {
-            "auto" -> hasMojeekKey
             "mojeek" -> true
             else -> false
         }
 
+        if (useBrave) {
+            if (braveKey.isBlank()) {
+                return jsonError(
+                    Response.Status.BAD_REQUEST,
+                    "missing_brave_search_api_key",
+                    JSONObject()
+                        .put(
+                            "hint",
+                            "Store a 'brave_search_api_key' credential in vault to enable Brave Search API."
+                        )
+                )
+            }
+            return try {
+                val isJapanese = Regex("[\\p{InHiragana}\\p{InKatakana}\\p{InCJK_Unified_Ideographs}]").containsMatchIn(q)
+                val country = if (isJapanese) "JP" else "US"
+                val searchLang = if (isJapanese) "ja" else "en"
+                val uiLang = if (isJapanese) "ja-jp" else "en-us"
+                val url = java.net.URL(
+                    "https://api.search.brave.com/res/v1/web/search?" +
+                        "q=" + java.net.URLEncoder.encode(q, "UTF-8") +
+                        "&count=" + maxResults +
+                        "&offset=0" +
+                        "&country=" + country +
+                        "&search_lang=" + searchLang +
+                        "&ui_lang=" + uiLang +
+                        "&safesearch=moderate"
+                )
+                val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 8000
+                    readTimeout = 12000
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("Accept-Encoding", "gzip")
+                    setRequestProperty("X-Subscription-Token", braveKey)
+                    setRequestProperty(
+                        "Accept-Language",
+                        if (isJapanese) "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.5" else "en-US,en;q=0.9"
+                    )
+                }
+                val stream =
+                    if (conn.responseCode in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
+                val body = stream.bufferedReader().use { it.readText() }
+                if (conn.responseCode !in 200..299) {
+                    return jsonError(
+                        Response.Status.SERVICE_UNAVAILABLE,
+                        "upstream_error",
+                        JSONObject().put("status", conn.responseCode).put("detail", body.take(400))
+                    )
+                }
+                val parsed = JSONObject(body.ifBlank { "{}" })
+                val web = parsed.optJSONObject("web") ?: JSONObject()
+                val arr = web.optJSONArray("results") ?: org.json.JSONArray()
+                val results = org.json.JSONArray()
+                for (i in 0 until arr.length()) {
+                    if (results.length() >= maxResults) break
+                    val r = arr.optJSONObject(i) ?: continue
+                    val u = r.optString("url", "").trim()
+                    val title = r.optString("title", "").trim()
+                    val desc = r.optString("description", "").trim()
+                    if (u.isBlank() || title.isBlank()) continue
+                    results.put(
+                        JSONObject()
+                            .put("title", title)
+                            .put("url", u)
+                            .put("snippet", desc.ifBlank { title })
+                    )
+                }
+                jsonResponse(
+                    JSONObject()
+                        .put("status", "ok")
+                        .put("provider", "brave_search_api")
+                        .put("query", q)
+                        .put("abstract", JSONObject().put("heading", "").put("text", "").put("url", ""))
+                        .put("results", results)
+                )
+            } catch (ex: java.net.SocketTimeoutException) {
+                jsonError(Response.Status.SERVICE_UNAVAILABLE, "upstream_timeout")
+            } catch (ex: Exception) {
+                jsonError(Response.Status.INTERNAL_ERROR, "search_failed", JSONObject().put("detail", ex.message ?: ""))
+            }
+        }
+
         if (useMojeek) {
-            val keyRow = credentialStore.get("mojeek_api_key")
-            val apiKey = (keyRow?.value ?: "").trim()
+            val apiKey = mojeekKey
             if (apiKey.isBlank()) {
                 return jsonError(
                     Response.Status.BAD_REQUEST,
@@ -1360,13 +1478,45 @@ class LocalHttpServer(
     }
 
     private fun readBody(session: IHTTPSession): String {
+        // NanoHTTPD's parseBody() path can mis-decode non-ASCII JSON bodies depending on the
+        // request Content-Type. For our JSON APIs, read raw bytes and decode using the declared
+        // charset (default UTF-8).
         return try {
-            val map = HashMap<String, String>()
-            session.parseBody(map)
-            map["postData"] ?: ""
+            val headers = session.headers ?: emptyMap()
+            val ct = (headers["content-type"] ?: headers["Content-Type"] ?: "").trim()
+            val charset = Regex("(?i)charset=([^;]+)")
+                .find(ct)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.trim()
+                ?.trim('"')
+                ?.ifBlank { null }
+                ?: "UTF-8"
+            val len = (headers["content-length"] ?: headers["Content-Length"] ?: "").trim().toIntOrNull()
+            val bytes = if (len != null && len >= 0) readExactly(session.inputStream, len) else session.inputStream.readBytes()
+            String(bytes, java.nio.charset.Charset.forName(charset))
         } catch (_: Exception) {
-            ""
+            // Fallback: best-effort parseBody (also consumes request body)
+            try {
+                val map = HashMap<String, String>()
+                session.parseBody(map)
+                map["postData"] ?: ""
+            } catch (_: Exception) {
+                ""
+            }
         }
+    }
+
+    private fun readExactly(input: java.io.InputStream, length: Int): ByteArray {
+        if (length <= 0) return ByteArray(0)
+        val out = ByteArray(length)
+        var off = 0
+        while (off < length) {
+            val n = input.read(out, off, length - off)
+            if (n <= 0) break
+            off += n
+        }
+        return if (off == length) out else out.copyOf(off)
     }
 
     private fun isPermissionApproved(permissionId: String, consume: Boolean): Boolean {

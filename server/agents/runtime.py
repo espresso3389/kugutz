@@ -54,6 +54,10 @@ class BrainRuntime:
                 "For write_file, paths must stay under the user root. "
                 "For tool_invoke, prefer device_api for local device actions "
                 "(python/ssh/shell/memory control via Kotlin local APIs). "
+                "When a request is about device control or runtime status, you SHOULD emit at least one "
+                "tool_invoke action with tool='device_api' and a concrete allowlisted action. "
+                "Do not ask user to do manual UI steps if a device_api action can do it. "
+                "If permission is required, include clear one-line guidance in responses and stop further actions. "
                 "Prefer uv/pip only when needed; avoid unnecessary installs. "
                 "For remote-device tasks, you may propose SSH/SCP setup/use steps, but do not execute "
                 "ssh/scp commands unless those commands are explicitly supported by available actions. "
@@ -228,6 +232,95 @@ class BrainRuntime:
 
         self._emit_log("brain_item_done", {"id": item.get("id"), "actions": min(len(actions), max_actions)})
 
+    def _heuristic_plan(self, item: Dict) -> Dict:
+        text = str(item.get("text") or "").lower()
+        responses: List[str] = []
+        actions: List[Dict] = []
+
+        def device_status() -> None:
+            responses.append("Checking SSH and Python status.")
+            actions.append(
+                {
+                    "type": "tool_invoke",
+                    "tool": "device_api",
+                    "args": {
+                        "action": "ssh.status",
+                        "payload": {},
+                        "detail": "Check SSH service status",
+                    },
+                }
+            )
+            actions.append(
+                {
+                    "type": "tool_invoke",
+                    "tool": "device_api",
+                    "args": {
+                        "action": "python.status",
+                        "payload": {},
+                        "detail": "Check Python worker status",
+                    },
+                }
+            )
+
+        if any(k in text for k in ("status", "check", "state")) and any(
+            k in text for k in ("ssh", "python", "worker", "device")
+        ):
+            device_status()
+        elif "restart" in text and "python" in text:
+            responses.append("Restarting Python worker.")
+            actions.append(
+                {
+                    "type": "tool_invoke",
+                    "tool": "device_api",
+                    "args": {
+                        "action": "python.restart",
+                        "payload": {},
+                        "detail": "Restart Python worker from agent request",
+                    },
+                }
+            )
+        elif "enable" in text and "ssh" in text:
+            responses.append("Enabling SSH service.")
+            actions.append(
+                {
+                    "type": "tool_invoke",
+                    "tool": "device_api",
+                    "args": {
+                        "action": "ssh.config",
+                        "payload": {"enabled": True},
+                        "detail": "Enable SSH service from agent request",
+                    },
+                }
+            )
+        elif ("pin" in text and "ssh" in text) and any(k in text for k in ("start", "enable", "use")):
+            responses.append("Starting SSH PIN authentication window.")
+            actions.append(
+                {
+                    "type": "tool_invoke",
+                    "tool": "device_api",
+                    "args": {
+                        "action": "ssh.pin.start",
+                        "payload": {"seconds": 20},
+                        "detail": "Start SSH PIN auth",
+                    },
+                }
+            )
+        elif "memory" in text and any(k in text for k in ("show", "get", "read")):
+            responses.append("Reading persistent memory.")
+            actions.append(
+                {
+                    "type": "tool_invoke",
+                    "tool": "device_api",
+                    "args": {
+                        "action": "brain.memory.get",
+                        "payload": {},
+                        "detail": "Read persistent memory",
+                    },
+                }
+            )
+
+        return {"responses": responses, "actions": actions}
+
     def _plan_with_cloud(self, item: Dict) -> Dict:
         cfg = self.get_config()
         model = str(cfg.get("model") or "").strip()
@@ -280,6 +373,14 @@ class BrainRuntime:
             "{type:'write_file', path:'relative/path.py', content:'...'} OR "
             "{type:'tool_invoke', tool:'filesystem|shell|device_api', args:{...}, request_id:'optional', detail:'optional'} OR "
             "{type:'sleep', seconds:1}. "
+            "For device actions, use tool='device_api' and args shape: "
+            "{action:'python.status|python.restart|ssh.status|ssh.config|ssh.pin.status|ssh.pin.start|ssh.pin.stop|shell.exec|brain.memory.get|brain.memory.set', payload:{...}, detail:'...'}."
+            "If user asks to check status, include at least one device_api status action. "
+            "If user asks to change device state, include one device_api mutating action with minimal payload. "
+            "Example output for status request: "
+            "{\"responses\":[\"Checking current SSH and Python status.\"],"
+            "\"actions\":[{\"type\":\"tool_invoke\",\"tool\":\"device_api\",\"args\":{\"action\":\"ssh.status\",\"payload\":{},\"detail\":\"Check SSH service status\"}},"
+            "{\"type\":\"tool_invoke\",\"tool\":\"device_api\",\"args\":{\"action\":\"python.status\",\"payload\":{},\"detail\":\"Check Python worker status\"}}]}. "
             "Input:\n" + json.dumps(user_payload)
         )
         if provider_url.rstrip("/").endswith("/responses"):
@@ -333,6 +434,9 @@ class BrainRuntime:
         parsed.setdefault("responses", [])
         parsed.setdefault("actions", [])
         if not parsed.get("responses") and not parsed.get("actions"):
+            heuristic = self._heuristic_plan(item)
+            if heuristic.get("responses") or heuristic.get("actions"):
+                return heuristic
             return {
                 "responses": [
                     "Model returned no actionable plan. Please retry with a clearer request."

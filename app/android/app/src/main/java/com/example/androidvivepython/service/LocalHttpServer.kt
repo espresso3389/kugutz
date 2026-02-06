@@ -606,7 +606,8 @@ class LocalHttpServer(
             val req = permissionStore.create(
                 tool = "network",
                 detail = "DuckDuckGo search: " + q.take(200),
-                scope = "once",
+                // Searching is typically iterative; don't re-prompt for every query.
+                scope = "session",
                 identity = "",
                 capability = "web.search"
             )
@@ -618,6 +619,8 @@ class LocalHttpServer(
                 .put("detail", req.detail)
                 .put("scope", req.scope)
                 .put("created_at", req.createdAt)
+                .put("identity", req.identity)
+                .put("capability", req.capability)
             val out = JSONObject()
                 .put("status", "permission_required")
                 .put("request", requestJson)
@@ -642,7 +645,7 @@ class LocalHttpServer(
             val body = stream.bufferedReader().use { it.readText() }
             if (conn.responseCode !in 200..299) {
                 return jsonError(
-                    Response.Status.BAD_GATEWAY,
+                    Response.Status.SERVICE_UNAVAILABLE,
                     "upstream_error",
                     JSONObject().put("status", conn.responseCode).put("detail", body.take(400))
                 )
@@ -700,7 +703,7 @@ class LocalHttpServer(
                     .put("results", results)
             )
         } catch (ex: java.net.SocketTimeoutException) {
-            jsonError(Response.Status.GATEWAY_TIMEOUT, "upstream_timeout")
+            jsonError(Response.Status.SERVICE_UNAVAILABLE, "upstream_timeout")
         } catch (ex: Exception) {
             jsonError(Response.Status.INTERNAL_ERROR, "search_failed", JSONObject().put("detail", ex.message ?: ""))
         }

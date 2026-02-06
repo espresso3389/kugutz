@@ -40,6 +40,9 @@ class BrainRuntime:
 
         # Ephemeral per-session notes (no permissions required).
         self._session_notes: Dict[str, Dict[str, str]] = {}
+        # Cache capability -> permission_id so the model doesn't need to remember ids.
+        # This is session-scoped (in-memory) and resets when the brain restarts.
+        self._capability_permissions: Dict[str, str] = {}
 
         self._config = self._load_config()
 
@@ -64,7 +67,8 @@ class BrainRuntime:
                 "You have function tools for LOCAL execution; use them instead of describing actions. "
                 "The runtime executes each tool call locally and returns tool outputs to you. "
                 "If the user asks for any device/file/state action, you MUST call tools (no pretending). "
-                "For web search: use web_search (DuckDuckGo) and ask for permission when prompted. "
+                "For web search: use web_search (DuckDuckGo). If permission is needed, ask the user to approve the in-app prompt/notification. "
+                "NEVER ask the user for any permission_id; that is handled by the system. "
                 "Prefer device_api for device controls (python/ssh/shell/memory via Kotlin control plane). "
                 "Use filesystem tools (list_dir/read_file/write_file/mkdir/move_path/delete_path) for file operations under the user root. "
                 "NEVER try to run `ls`/`pwd`/`cat` via a shell. For listing or reading files, ALWAYS use filesystem tools. "
@@ -295,6 +299,34 @@ class BrainRuntime:
         if not env_name:
             return ""
         return str(os.environ.get(env_name) or "")
+
+    def _get_permission_status(self, permission_id: str) -> str:
+        pid = (permission_id or "").strip()
+        if not pid:
+            return ""
+        try:
+            resp = requests.get(f"http://127.0.0.1:8765/permissions/{pid}", timeout=3)
+            if resp.status_code != 200:
+                return ""
+            body = resp.json() if resp.content else {}
+            if not isinstance(body, dict):
+                return ""
+            return str(body.get("status") or "").strip()
+        except Exception:
+            return ""
+
+    def _wait_for_permission(self, permission_id: str, *, timeout_s: float = 45.0, poll_s: float = 1.0) -> str:
+        pid = (permission_id or "").strip()
+        if not pid:
+            return "invalid"
+        deadline = time.time() + max(1.0, float(timeout_s or 45.0))
+        poll_s = max(0.2, min(float(poll_s or 1.0), 5.0))
+        while time.time() < deadline:
+            status = self._get_permission_status(pid)
+            if status in {"approved", "denied", "used"}:
+                return status
+            time.sleep(poll_s)
+        return "timeout"
 
     def _load_config(self) -> Dict:
         raw = self._storage.get_setting("brain.config.v1")
@@ -804,9 +836,8 @@ class BrainRuntime:
                     "properties": {
                         "query": {"type": "string"},
                         "max_results": {"type": "integer"},
-                        "permission_id": {"type": "string"},
                     },
-                    "required": ["query", "max_results", "permission_id"],
+                    "required": ["query", "max_results"],
                 },
             },
             {
@@ -1452,20 +1483,55 @@ class BrainRuntime:
             except Exception:
                 max_results = 5
             max_results = max(1, min(max_results, 10))
-            permission_id = str(args.get("permission_id") or "").strip()
-            try:
+            capability = "web.search"
+            permission_id = self._capability_permissions.get(capability, "")
+
+            def do_request(pid: str) -> tuple[int, Dict[str, Any]]:
                 resp = requests.post(
                     "http://127.0.0.1:8765/web/search",
-                    json={"query": query, "max_results": max_results, "permission_id": permission_id},
+                    json={"query": query, "max_results": max_results, "permission_id": (pid or "")},
                     timeout=15,
                 )
                 body = resp.json() if resp.content else {}
+                return resp.status_code, body if isinstance(body, dict) else {"raw": body}
+
+            try:
+                http_status, body = do_request(permission_id)
             except Exception as ex:
                 return {"status": "error", "error": "search_failed", "detail": str(ex)}
-            if resp.status_code == 403 and isinstance(body, dict) and body.get("status") == "permission_required":
-                return body
-            if resp.status_code not in (200, 201) or not isinstance(body, dict):
-                return {"status": "error", "error": "upstream_error", "http_status": resp.status_code, "body": body}
+
+            if http_status == 403 and body.get("status") == "permission_required":
+                req = body.get("request") if isinstance(body.get("request"), dict) else {}
+                req_id = str(req.get("id") or "").strip()
+                if req_id:
+                    self._capability_permissions[capability] = req_id
+                    wait_status = self._wait_for_permission(req_id, timeout_s=float(self._config.get("permission_timeout_s", 45)))
+                    if wait_status == "approved":
+                        try:
+                            http_status, body = do_request(req_id)
+                        except Exception as ex:
+                            return {"status": "error", "error": "search_failed", "detail": str(ex)}
+                    elif wait_status == "denied":
+                        return {"status": "error", "error": "permission_denied", "detail": "Web search permission was denied."}
+                    else:
+                        return {
+                            "status": "error",
+                            "error": "permission_timeout",
+                            "detail": "Web search requires permission. Please approve the prompt/notification in the app and retry.",
+                        }
+                else:
+                    return {
+                        "status": "error",
+                        "error": "permission_required",
+                        "detail": "Web search requires permission. Please approve the prompt/notification in the app and retry.",
+                    }
+
+            if http_status not in (200, 201) or not isinstance(body, dict) or body.get("status") != "ok":
+                return {"status": "error", "error": "upstream_error", "http_status": http_status, "body": body}
+
+            if self._capability_permissions.get(capability):
+                # Keep whatever permission id we used last for future calls.
+                pass
             return body
         if name == "write_file":
             action = {

@@ -415,6 +415,9 @@ class LocalHttpServer(
                 handleBrainConfigSet(body)
             }
             uri == "/brain/agent/bootstrap" && session.method == Method.POST -> {
+                // Some clients send "{}" as a body; always consume it to avoid leaving bytes
+                // in the connection buffer (which can corrupt the next request line).
+                readBody(session)
                 handleBrainAgentBootstrap()
             }
             // Chat-mode streaming (direct cloud) has been removed. Use agent mode instead.

@@ -101,6 +101,7 @@ class BrainRuntime:
             "disable",
             "install",
             "curl ",
+            "curl",
             "ssh",
             "python",
             "worker",

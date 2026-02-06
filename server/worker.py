@@ -464,6 +464,19 @@ class WorkerHandler(BaseHTTPRequestHandler):
             if not isinstance(meta, dict):
                 meta = {}
             if not text.strip():
+                # Backward-compat: accept {messages:[{role,content},...]} and use last user message.
+                messages = (payload or {}).get("messages")
+                if isinstance(messages, list):
+                    for msg in reversed(messages):
+                        if not isinstance(msg, dict):
+                            continue
+                        if str(msg.get("role") or "") != "user":
+                            continue
+                        content = msg.get("content")
+                        if isinstance(content, str) and content.strip():
+                            text = content
+                            break
+            if not text.strip():
                 self._send_json({"error": "missing_text"}, status=400)
                 return
             self._send_json(BRAIN_RUNTIME.enqueue_chat(text, meta=meta))

@@ -765,6 +765,19 @@ async def brain_inbox_chat(payload: Dict):
     text = str(payload.get("text") or "")
     meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
     if not text.strip():
+        # Backward-compat: accept {messages:[{role,content},...]} and use last user message.
+        messages = payload.get("messages")
+        if isinstance(messages, list):
+            for msg in reversed(messages):
+                if not isinstance(msg, dict):
+                    continue
+                if str(msg.get("role") or "") != "user":
+                    continue
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    text = content
+                    break
+    if not text.strip():
         raise HTTPException(status_code=400, detail="missing_text")
     return BRAIN_RUNTIME.enqueue_chat(text, meta=meta)
 

@@ -48,6 +48,10 @@ class LocalHttpServer(
 
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri ?: "/"
+        // NanoHTTPD keeps connections alive; if we return early on a POST without consuming the body,
+        // leftover bytes can corrupt the next request line (e.g. "{}POST ...").
+        // Always read the POST body once up-front and reuse it across handlers.
+        val postBody: String? = if (session.method == Method.POST) readBody(session) else null
         return when {
             uri == "/health" -> jsonResponse(
                 JSONObject()
@@ -71,7 +75,7 @@ class LocalHttpServer(
                 jsonResponse(JSONObject().put("status", "starting"))
             }
             uri == "/agent/run" && session.method == Method.POST -> {
-                val payload = JSONObject(readBody(session).ifBlank { "{}" })
+                val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
                 val name = payload.optString("name", "task")
                 val task = createTask(name, payload)
                 runtimeManager.startWorker()
@@ -99,7 +103,7 @@ class LocalHttpServer(
                 textResponse(version)
             }
             uri == "/permissions/request" && session.method == Method.POST -> {
-                val payload = JSONObject(readBody(session).ifBlank { "{}" })
+                val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
                 val tool = payload.optString("tool", "unknown")
                 val detail = payload.optString("detail", "")
                 val requestedScope = payload.optString("scope", "once")
@@ -179,7 +183,7 @@ class LocalHttpServer(
                 }
             }
             uri == "/vault/credentials" && session.method == Method.POST -> {
-                val payload = JSONObject(readBody(session).ifBlank { "{}" })
+                val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
                 val name = payload.optString("name", "")
                 val value = payload.optString("value", "")
                 val permissionId = payload.optString("permission_id", "")
@@ -203,7 +207,7 @@ class LocalHttpServer(
                 jsonResponse(JSONObject().put("status", "ok").put("name", nameTrimmed))
             }
             uri == "/vault/credentials/get" && session.method == Method.POST -> {
-                val payload = JSONObject(readBody(session).ifBlank { "{}" })
+                val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
                 val name = payload.optString("name", "")
                 val permissionId = payload.optString("permission_id", "")
                 if (permissionId.isBlank()) {
@@ -254,7 +258,7 @@ class LocalHttpServer(
                     runtimeManager.startWorker()
                     waitForPythonHealth(5000)
                 }
-                val body = readBody(session).ifBlank { "{}" }
+                val body = (postBody ?: "").ifBlank { "{}" }
                 val proxied = proxyWorkerRequest(
                     path = uri,
                     method = "POST",
@@ -273,7 +277,7 @@ class LocalHttpServer(
                 if (session.method != Method.POST) {
                     return jsonError(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
                 }
-                val body = readBody(session)
+                val body = postBody ?: ""
                 val payload = runCatching { JSONObject(body) }.getOrNull()
                     ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_json")
                 return handleShellExec(payload)
@@ -312,13 +316,13 @@ class LocalHttpServer(
                 )
             }
             uri == "/ssh/keys/policy" && session.method == Method.POST -> {
-                val payload = JSONObject(readBody(session).ifBlank { "{}" })
+                val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
                 val requireBio = payload.optBoolean("require_biometric", sshKeyPolicy.isBiometricRequired())
                 sshKeyPolicy.setBiometricRequired(requireBio)
                 jsonResponse(JSONObject().put("require_biometric", sshKeyPolicy.isBiometricRequired()))
             }
             uri == "/ssh/keys/add" && session.method == Method.POST -> {
-                val payload = JSONObject(readBody(session).ifBlank { "{}" })
+                val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
                 val key = payload.optString("key", "")
                 val label = payload.optString("label", "")
                 val expiresAt = if (payload.has("expires_at")) payload.optLong("expires_at", 0L) else null
@@ -338,7 +342,7 @@ class LocalHttpServer(
                 )
             }
             uri == "/ssh/keys/delete" && session.method == Method.POST -> {
-                val payload = JSONObject(readBody(session).ifBlank { "{}" })
+                val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
                 val fingerprint = payload.optString("fingerprint", "")
                 val permissionId = payload.optString("permission_id", "")
                 if (!isPermissionApproved(permissionId, consume = true)) {
@@ -367,7 +371,7 @@ class LocalHttpServer(
                 )
             }
             uri == "/ssh/pin/start" && session.method == Method.POST -> {
-                val payload = JSONObject(readBody(session).ifBlank { "{}" })
+                val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
                 val permissionId = payload.optString("permission_id", "")
                 val seconds = payload.optInt("seconds", 10)
                 if (!isPermissionApproved(permissionId, consume = true)) {
@@ -391,7 +395,7 @@ class LocalHttpServer(
                 jsonResponse(JSONObject().put("active", false))
             }
             uri == "/ssh/config" && session.method == Method.POST -> {
-                val body = readBody(session)
+                val body = postBody ?: ""
                 val payload = JSONObject(body.ifBlank { "{}" })
                 val enabled = payload.optBoolean("enabled", sshdManager.isEnabled())
                 val port = if (payload.has("port")) payload.optInt("port", sshdManager.getPort()) else null
@@ -411,13 +415,10 @@ class LocalHttpServer(
             }
             uri == "/brain/config" && session.method == Method.GET -> handleBrainConfigGet()
             uri == "/brain/config" && session.method == Method.POST -> {
-                val body = readBody(session)
+                val body = postBody ?: ""
                 handleBrainConfigSet(body)
             }
             uri == "/brain/agent/bootstrap" && session.method == Method.POST -> {
-                // Some clients send "{}" as a body; always consume it to avoid leaving bytes
-                // in the connection buffer (which can corrupt the next request line).
-                readBody(session)
                 handleBrainAgentBootstrap()
             }
             // Chat-mode streaming (direct cloud) has been removed. Use agent mode instead.
@@ -428,7 +429,7 @@ class LocalHttpServer(
                 jsonResponse(JSONObject().put("content", readMemory()))
             }
             uri == "/brain/memory" && session.method == Method.POST -> {
-                val body = readBody(session)
+                val body = postBody ?: ""
                 val payload = runCatching { JSONObject(body) }.getOrNull()
                     ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_json")
                 writeMemory(payload.optString("content", ""))

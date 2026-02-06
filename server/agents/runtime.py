@@ -63,7 +63,8 @@ class BrainRuntime:
                 "If the user asks for any device/file/state action, you MUST call tools (no pretending). "
                 "Prefer device_api for device controls (python/ssh/shell/memory via Kotlin control plane). "
                 "Use filesystem tools (list_dir/read_file/write_file/mkdir/move_path/delete_path) for file operations under the user root. "
-                "Use shell_exec only with cmd in {python,pip,uv,curl} when needed. "
+                "NEVER try to run `ls`/`pwd`/`cat` via a shell. For listing or reading files, ALWAYS use filesystem tools. "
+                "For running code/tools, use run_python/run_pip/run_uv/run_curl (not a generic shell). "
                 "If a tool output says permission_required/permission_expired, stop and ask the user to approve in the app UI. "
                 "After tool outputs, provide a short, factual summary and include any relevant output snippets."
             ),
@@ -79,6 +80,16 @@ class BrainRuntime:
         if not t:
             return False
         keywords = (
+            # Japanese (common UI queries)
+            "バージョン",
+            "確認",
+            "実行",
+            "一覧",
+            "表示",
+            "教えて",
+            "起動",
+            "停止",
+            "再起動",
             "run ",
             "execute",
             "ls",
@@ -488,7 +499,6 @@ class BrainRuntime:
                                 "ssh.pin.status",
                                 "ssh.pin.start",
                                 "ssh.pin.stop",
-                                "shell.exec",
                                 "brain.memory.get",
                                 "brain.memory.set",
                             ],
@@ -501,17 +511,58 @@ class BrainRuntime:
             },
             {
                 "type": "function",
-                "name": "shell_exec",
-                "description": "Execute local shell command within user dir. Allowed cmd: python|pip|uv|curl.",
+                "name": "run_python",
+                "description": "Run Python locally (equivalent to: python <args>) within the user directory.",
                 "parameters": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "cmd": {"type": "string", "enum": ["python", "pip", "uv", "curl"]},
                         "args": {"type": "string"},
                         "cwd": {"type": "string"},
                     },
-                    "required": ["cmd", "args", "cwd"],
+                    "required": ["args", "cwd"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "run_pip",
+                "description": "Run pip locally (equivalent to: pip <args>) within the user directory.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "args": {"type": "string"},
+                        "cwd": {"type": "string"},
+                    },
+                    "required": ["args", "cwd"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "run_uv",
+                "description": "Run uv locally (equivalent to: uv <args>) within the user directory.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "args": {"type": "string"},
+                        "cwd": {"type": "string"},
+                    },
+                    "required": ["args", "cwd"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "run_curl",
+                "description": "Run curl locally (equivalent to: curl <args>) within the user directory.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "args": {"type": "string"},
+                        "cwd": {"type": "string"},
+                    },
+                    "required": ["args", "cwd"],
                 },
             },
             {
@@ -593,6 +644,7 @@ class BrainRuntime:
         key_name = str(cfg.get("api_key_credential") or "").strip()
         tool_policy = str(cfg.get("tool_policy") or "auto").strip().lower()
         require_tool = tool_policy == "required" and self._needs_tool_for_text(str(item.get("text") or ""))
+        tool_required_unsatisfied = bool(require_tool)
         if not model or not provider_url or not key_name:
             self._record_message(
                 "assistant",
@@ -662,16 +714,18 @@ class BrainRuntime:
 
             calls = [o for o in output_items if isinstance(o, dict) and o.get("type") == "function_call"]
             if not calls:
-                # If we require tool calls for this user request, don't accept a "plain" response.
-                if require_tool and forced_rounds < 1:
+                # If we require tool calls for this user request, don't accept a "plain" response
+                # until we've observed at least one tool call.
+                if tool_required_unsatisfied and forced_rounds < 1:
                     forced_rounds += 1
                     pending_input = [
                         {
                             "role": "user",
                             "content": (
                                 "Tool policy is REQUIRED for this request. "
-                                "You MUST call one or more tools (device_api, shell_exec, write_file, sleep) "
-                                "to perform the action(s), then summarize after tool outputs are provided. "
+                                "You MUST call one or more tools (device_api, run_python/run_pip/run_uv/run_curl, "
+                                "filesystem tools, write_file, sleep) to perform the action(s), "
+                                "then summarize after tool outputs are provided. "
                                 "Do not claim you executed anything without tool output."
                             ),
                         }
@@ -683,6 +737,8 @@ class BrainRuntime:
                     self._record_message("assistant", text, {"item_id": item.get("id")})
                     self._emit_log("brain_response", {"item_id": item.get("id"), "text": text[:300]})
                 return
+
+            tool_required_unsatisfied = False
 
             # Record assistant message text only once we have tool calls for this round.
             for text in message_texts:
@@ -708,8 +764,30 @@ class BrainRuntime:
                         "output": json.dumps(result),
                     }
                 )
+            # Nudge the model to stop once it has enough information.
+            pending_input.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Tool outputs have been provided. If the task is complete, respond with the final answer now "
+                        "and do not call more tools. Only call another tool if strictly necessary."
+                    ),
+                }
+            )
             if not pending_input:
                 return
+
+        # If we reach here, we exhausted max_rounds without a final assistant message.
+        # Avoid leaving the UI stuck waiting.
+        self._record_message(
+            "assistant",
+            "Agent tool loop did not finish within the allowed rounds. "
+            "The last tool outputs may contain the error (e.g., permission_required or command_not_allowed). "
+            "Please retry or rephrase, and approve any pending permissions if prompted.",
+            {"item_id": item.get("id")},
+        )
+        self._emit_log("brain_response", {"item_id": item.get("id"), "text": "tool_loop_exhausted"})
+        return
 
     def _heuristic_plan(self, item: Dict) -> Dict:
         text = str(item.get("text") or "").lower()
@@ -828,7 +906,6 @@ class BrainRuntime:
             "item": item,
             "recent_messages": history,
             "constraints": {
-                "allowed_commands": ["python", "pip", "uv", "curl"],
                 "device_api_actions": [
                     "python.status",
                     "python.restart",
@@ -837,7 +914,6 @@ class BrainRuntime:
                     "ssh.pin.status",
                     "ssh.pin.start",
                     "ssh.pin.stop",
-                    "shell.exec",
                     "brain.memory.get",
                     "brain.memory.set",
                 ],
@@ -853,7 +929,7 @@ class BrainRuntime:
             "{type:'tool_invoke', tool:'filesystem|shell|device_api', args:{...}, request_id:'optional', detail:'optional'} OR "
             "{type:'sleep', seconds:1}. "
             "For device actions, use tool='device_api' and args shape: "
-            "{action:'python.status|python.restart|ssh.status|ssh.config|ssh.pin.status|ssh.pin.start|ssh.pin.stop|shell.exec|brain.memory.get|brain.memory.set', payload:{...}, detail:'...'}."
+            "{action:'python.status|python.restart|ssh.status|ssh.config|ssh.pin.status|ssh.pin.start|ssh.pin.stop|brain.memory.get|brain.memory.set', payload:{...}, detail:'...'}."
             "If user asks to check status, include at least one device_api status action. "
             "If user asks to change device state, include one device_api mutating action with minimal payload. "
             "Example output for status request: "
@@ -980,6 +1056,38 @@ class BrainRuntime:
             action = {
                 "type": "shell_exec",
                 "cmd": str(args.get("cmd") or ""),
+                "args": str(args.get("args") or ""),
+                "cwd": str(args.get("cwd") or ""),
+            }
+            return self._execute_action(item, action)
+        if name == "run_python":
+            action = {
+                "type": "shell_exec",
+                "cmd": "python",
+                "args": str(args.get("args") or ""),
+                "cwd": str(args.get("cwd") or ""),
+            }
+            return self._execute_action(item, action)
+        if name == "run_pip":
+            action = {
+                "type": "shell_exec",
+                "cmd": "pip",
+                "args": str(args.get("args") or ""),
+                "cwd": str(args.get("cwd") or ""),
+            }
+            return self._execute_action(item, action)
+        if name == "run_uv":
+            action = {
+                "type": "shell_exec",
+                "cmd": "uv",
+                "args": str(args.get("args") or ""),
+                "cwd": str(args.get("cwd") or ""),
+            }
+            return self._execute_action(item, action)
+        if name == "run_curl":
+            action = {
+                "type": "shell_exec",
+                "cmd": "curl",
                 "args": str(args.get("args") or ""),
                 "cwd": str(args.get("cwd") or ""),
             }

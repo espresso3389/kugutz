@@ -4,7 +4,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Callable, Deque, Dict, List, Optional
+from typing import Any, Callable, Deque, Dict, List, Optional
 
 import requests
 
@@ -46,26 +46,15 @@ class BrainRuntime:
             "model": "",
             "api_key_credential": "openai_api_key",
             "system_prompt": (
-                "You are Kugutz Brain running on Android. Return strict JSON only with keys "
-                "responses (string[]) and actions (object[]). "
-                "Use short, concrete responses and then actions. "
-                "Action types: shell_exec, write_file, tool_invoke, sleep. "
-                "For shell_exec, allowed cmd is only python, pip, uv, curl. "
-                "For write_file, paths must stay under the user root. "
-                "For tool_invoke, prefer device_api for local device actions "
-                "(python/ssh/shell/memory control via Kotlin local APIs). "
-                "When a request is about device control or runtime status, you SHOULD emit at least one "
-                "tool_invoke action with tool='device_api' and a concrete allowlisted action. "
-                "Do not ask user to do manual UI steps if a device_api action can do it. "
-                "If permission is required, include clear one-line guidance in responses and stop further actions. "
-                "Prefer uv/pip only when needed; avoid unnecessary installs. "
-                "For remote-device tasks, you may propose SSH/SCP setup/use steps, but do not execute "
-                "ssh/scp commands unless those commands are explicitly supported by available actions. "
-                "If tool_invoke returns permission_required, respond with clear next step and stop. "
-                "Protocol: The runtime executes actions and returns tool_results to you in the next planning round. "
-                "After receiving tool_results, return another strict JSON object. "
-                "When done, return actions as [] and provide final user-facing responses. "
-                "Never assume hidden capabilities. Use only provided APIs and tools."
+                "You are Kugutz Brain running on Android. "
+                "Primary protocol: use provided function tools for local execution. "
+                "The runtime executes each tool call locally and returns tool outputs to you. "
+                "Use tools for device interactions and state changes, then provide concise user-facing responses. "
+                "Prefer device_api for local device actions (python/ssh/shell/memory via Kotlin APIs). "
+                "Allowed shell commands are python, pip, uv, curl. "
+                "Write files only under user root. "
+                "If a tool output indicates permission_required, explain that approval is needed and stop. "
+                "Do not invent capabilities. Use only available tools."
             ),
             "temperature": 0.2,
             "max_actions": 6,
@@ -213,6 +202,14 @@ class BrainRuntime:
 
     def _process_item(self, item: Dict) -> None:
         self._emit_log("brain_item_started", {"id": item.get("id"), "kind": item.get("kind")})
+
+        cfg = self.get_config()
+        provider_url = str(cfg.get("provider_url") or "").strip()
+        if provider_url.rstrip("/").endswith("/responses"):
+            self._process_with_responses_tools(item)
+            self._emit_log("brain_item_done", {"id": item.get("id"), "actions": "tool_loop"})
+            return
+
         max_actions = max(0, min(int(self._config.get("max_actions", 6) or 6), 12))
         max_rounds = 3
         tool_results: List[Dict] = []
@@ -247,6 +244,180 @@ class BrainRuntime:
                 break
 
         self._emit_log("brain_item_done", {"id": item.get("id"), "actions": total_actions})
+
+    def _responses_tools(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "name": "device_api",
+                "description": "Invoke allowlisted local device API action on 127.0.0.1:8765.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": [
+                                "python.status",
+                                "python.restart",
+                                "ssh.status",
+                                "ssh.config",
+                                "ssh.pin.status",
+                                "ssh.pin.start",
+                                "ssh.pin.stop",
+                                "shell.exec",
+                                "brain.memory.get",
+                                "brain.memory.set",
+                            ],
+                        },
+                        "payload": {"type": "object", "additionalProperties": True},
+                        "detail": {"type": "string"},
+                    },
+                    "required": ["action", "payload", "detail"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "shell_exec",
+                "description": "Execute local shell command within user dir. Allowed cmd: python|pip|uv|curl.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "cmd": {"type": "string", "enum": ["python", "pip", "uv", "curl"]},
+                        "args": {"type": "string"},
+                        "cwd": {"type": "string"},
+                    },
+                    "required": ["cmd", "args", "cwd"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "write_file",
+                "description": "Write UTF-8 text file under user root.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["path", "content"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "sleep",
+                "description": "Pause execution for small delay.",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "seconds": {"type": "number"},
+                    },
+                    "required": ["seconds"],
+                },
+            },
+        ]
+
+    def _process_with_responses_tools(self, item: Dict) -> None:
+        cfg = self.get_config()
+        model = str(cfg.get("model") or "").strip()
+        provider_url = str(cfg.get("provider_url") or "").strip()
+        key_name = str(cfg.get("api_key_credential") or "").strip()
+        if not model or not provider_url or not key_name:
+            self._record_message(
+                "assistant",
+                "Brain is not configured yet. Set provider_url, model, and api_key_credential via /brain/config.",
+                {"item_id": item.get("id")},
+            )
+            return
+
+        key_row = self._storage.get_credential(key_name)
+        api_key = (key_row or {}).get("value", "")
+        if not api_key:
+            self._record_message(
+                "assistant",
+                f"Missing API credential '{key_name}'. Set it in vault, then continue.",
+                {"item_id": item.get("id")},
+            )
+            return
+
+        tools = self._responses_tools()
+        max_rounds = 4
+        max_actions = max(1, min(int(self._config.get("max_actions", 6) or 6), 12))
+        previous_response_id: Optional[str] = None
+        pending_input: List[Dict[str, Any]] = [
+            {
+                "role": "user",
+                "content": f"Task item:\n{json.dumps(item)}",
+            }
+        ]
+
+        for _ in range(max_rounds):
+            body: Dict[str, Any] = {
+                "model": model,
+                "tools": tools,
+                "input": pending_input,
+            }
+            if previous_response_id:
+                body["previous_response_id"] = previous_response_id
+            else:
+                body["instructions"] = str(cfg.get("system_prompt") or "")
+
+            resp = requests.post(
+                provider_url,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                data=json.dumps(body),
+                timeout=40,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            previous_response_id = payload.get("id")
+
+            output_items = payload.get("output") or []
+            for out in output_items:
+                if not isinstance(out, dict) or out.get("type") != "message":
+                    continue
+                text_parts: List[str] = []
+                for part in out.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") == "output_text":
+                        t = str(part.get("text") or "").strip()
+                        if t:
+                            text_parts.append(t)
+                if text_parts:
+                    text = "\n".join(text_parts)
+                    self._record_message("assistant", text, {"item_id": item.get("id")})
+                    self._emit_log("brain_response", {"item_id": item.get("id"), "text": text[:300]})
+
+            calls = [o for o in output_items if isinstance(o, dict) and o.get("type") == "function_call"]
+            if not calls:
+                return
+
+            pending_input = []
+            for call in calls[:max_actions]:
+                name = str(call.get("name") or "")
+                call_id = str(call.get("call_id") or "")
+                raw_args = call.get("arguments")
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                except Exception:
+                    args = {}
+                if not isinstance(args, dict):
+                    args = {}
+                result = self._execute_function_tool(item, name, args)
+                pending_input.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": json.dumps(result),
+                    }
+                )
+            if not pending_input:
+                return
 
     def _heuristic_plan(self, item: Dict) -> Dict:
         text = str(item.get("text") or "").lower()
@@ -436,12 +607,12 @@ class BrainRuntime:
         )
         if not isinstance(content, str):
             content = "{}"
-            for item in payload.get("output") or []:
-                if not isinstance(item, dict):
+            for out_item in payload.get("output") or []:
+                if not isinstance(out_item, dict):
                     continue
-                if item.get("type") != "message":
+                if out_item.get("type") != "message":
                     continue
-                for part in item.get("content") or []:
+                for part in out_item.get("content") or []:
                     if isinstance(part, dict) and part.get("type") == "output_text":
                         content = str(part.get("text") or "")
                         break
@@ -484,6 +655,47 @@ class BrainRuntime:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return {"status": "ok", "path": str(target)}
+
+    def _execute_function_tool(self, item: Dict, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        if name == "device_api":
+            action = {
+                "type": "tool_invoke",
+                "tool": "device_api",
+                "args": {
+                    "action": str(args.get("action") or ""),
+                    "payload": args.get("payload") if isinstance(args.get("payload"), dict) else {},
+                    "detail": str(args.get("detail") or ""),
+                },
+            }
+            return self._execute_action(item, action)
+        if name == "shell_exec":
+            action = {
+                "type": "shell_exec",
+                "cmd": str(args.get("cmd") or ""),
+                "args": str(args.get("args") or ""),
+                "cwd": str(args.get("cwd") or ""),
+            }
+            return self._execute_action(item, action)
+        if name == "write_file":
+            action = {
+                "type": "write_file",
+                "path": str(args.get("path") or ""),
+                "content": str(args.get("content") or ""),
+            }
+            return self._execute_action(item, action)
+        if name == "sleep":
+            action = {
+                "type": "sleep",
+                "seconds": float(args.get("seconds") or 0),
+            }
+            return self._execute_action(item, action)
+        result = {"status": "error", "error": "unknown_tool"}
+        self._record_message(
+            "tool",
+            json.dumps({"tool_name": name, "args": args, "result": result}),
+            {"item_id": item.get("id")},
+        )
+        return result
 
     def _execute_action(self, item: Dict, action: Dict) -> Dict:
         a_type = str(action.get("type") or "").strip()

@@ -236,7 +236,7 @@ class LocalHttpServer(
             uri == "/builtins/stt" && session.method == Method.POST -> {
                 return jsonError(Response.Status.NOT_IMPLEMENTED, "not_implemented", JSONObject().put("feature", "stt"))
             }
-            (uri == "/brain/status" || uri == "/brain/config" || uri == "/brain/messages") && session.method == Method.GET -> {
+            (uri == "/brain/status" || uri == "/brain/messages") && session.method == Method.GET -> {
                 if (runtimeManager.getStatus() != "ok") {
                     runtimeManager.startWorker()
                     waitForPythonHealth(5000)
@@ -249,7 +249,7 @@ class LocalHttpServer(
                 )
                 proxied ?: jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_unavailable")
             }
-            uri.startsWith("/brain/") && session.method == Method.POST -> {
+            (uri == "/brain/start" || uri == "/brain/stop" || uri == "/brain/inbox/chat" || uri == "/brain/inbox/event") && session.method == Method.POST -> {
                 if (runtimeManager.getStatus() != "ok") {
                     runtimeManager.startWorker()
                     waitForPythonHealth(5000)

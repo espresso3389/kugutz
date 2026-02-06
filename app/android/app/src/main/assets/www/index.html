@@ -604,14 +604,24 @@
         chatSend.disabled = true;
         const aDiv = addMsg("assistant", "_thinking..._");
         try {
+          async function readError(res, fallbackPrefix) {
+            const raw = await res.text().catch(() => "");
+            try {
+              const obj = raw ? JSON.parse(raw) : {};
+              const msg = (obj && (obj.error || obj.detail || obj.message)) ? (obj.error || obj.detail || obj.message) : "";
+              if (msg) return msg;
+            } catch (_) {}
+            if (raw && raw.trim()) return raw.trim().slice(0, 200);
+            return fallbackPrefix + " (" + res.status + ")";
+          }
+
           const boot = await fetch(API + "/brain/agent/bootstrap", {
             method: "POST",
             headers: { "Content-Type": "application/json; charset=utf-8" },
             body: "{}",
           });
           if (!boot.ok) {
-            const err = await boot.json().catch(() => ({}));
-            throw new Error(err.error || "Agent bootstrap failed (" + boot.status + ")");
+            throw new Error(await readError(boot, "Agent bootstrap failed"));
           }
 
           const res = await fetch(API + "/brain/inbox/chat", {
@@ -620,8 +630,7 @@
             body: JSON.stringify({ text, meta: { source: "chat_ui" } }),
           });
           if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.error || "Agent queue failed (" + res.status + ")");
+            throw new Error(await readError(res, "Agent queue failed"));
           }
           const queued = await res.json();
           const itemId = queued.id || "";

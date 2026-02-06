@@ -10,5 +10,7 @@ data class PermissionEntity(
     val detail: String,
     val scope: String,
     val status: String,
-    val createdAt: Long
+    val createdAt: Long,
+    val identity: String = "",
+    val capability: String = ""
 )

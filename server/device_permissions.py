@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -6,14 +7,27 @@ from typing import Any, Dict, Optional
 
 
 BASE_URL = "http://127.0.0.1:8765"
+_IDENTITY = (os.environ.get("KUGUTZ_IDENTITY") or os.environ.get("KUGUTZ_SESSION_ID") or "").strip()
 
 
-def _request_json(method: str, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def set_identity(identity: str) -> None:
+    global _IDENTITY
+    _IDENTITY = str(identity or "").strip()
+
+
+def _request_json(
+    method: str,
+    path: str,
+    body: Optional[Dict[str, Any]] = None,
+    identity: str = "",
+) -> Dict[str, Any]:
     data = None
     headers = {"Accept": "application/json"}
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
+    if identity:
+        headers["X-Kugutz-Identity"] = identity
     req = urllib.request.Request(BASE_URL + path, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=12) as resp:
@@ -31,7 +45,7 @@ def _request_json(method: str, path: str, body: Optional[Dict[str, Any]] = None)
         return {"status": "error", "error": str(ex)}
 
 
-def request(tool: str, detail: str = "", scope: str = "once") -> Dict[str, Any]:
+def request(tool: str, detail: str = "", scope: str = "once", identity: str = "") -> Dict[str, Any]:
     """
     Create a permission request in the Kotlin control plane.
 
@@ -47,10 +61,12 @@ def request(tool: str, detail: str = "", scope: str = "once") -> Dict[str, Any]:
     tool = str(tool or "").strip()
     if not tool:
         raise ValueError("tool is required")
+    ident = (identity or _IDENTITY).strip()
     resp = _request_json(
         "POST",
         "/permissions/request",
-        {"tool": tool, "detail": str(detail or ""), "scope": str(scope or "once")},
+        {"tool": tool, "detail": str(detail or ""), "scope": str(scope or "once"), "identity": ident},
+        identity=ident,
     )
     if resp.get("status") != "ok":
         raise RuntimeError(f"permission request failed: {resp}")
@@ -89,7 +105,13 @@ def wait(permission_id: str, timeout_s: float = 60.0, poll_s: float = 0.5) -> Di
     return {"id": permission_id, "status": "timeout", "last": last}
 
 
-def ensure_device(capability: str, detail: str = "", scope: str = "once", timeout_s: float = 60.0) -> str:
+def ensure_device(
+    capability: str,
+    detail: str = "",
+    scope: str = "once",
+    timeout_s: float = 60.0,
+    identity: str = "",
+) -> str:
     """
     Convenience wrapper for requesting and waiting on a device permission.
     Returns the approved permission_id or raises PermissionError.
@@ -98,10 +120,9 @@ def ensure_device(capability: str, detail: str = "", scope: str = "once", timeou
     if not cap:
         raise ValueError("capability is required")
     tool = f"device.{cap}"
-    req = request(tool=tool, detail=detail, scope=scope)
+    req = request(tool=tool, detail=detail, scope=scope, identity=(identity or _IDENTITY).strip())
     pid = str(req.get("id"))
     final = wait(pid, timeout_s=timeout_s)
     if final.get("status") != "approved":
         raise PermissionError(f"{tool} not approved: {final}")
     return pid
-

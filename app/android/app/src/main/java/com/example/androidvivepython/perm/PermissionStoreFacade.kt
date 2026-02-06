@@ -11,17 +11,23 @@ class PermissionStoreFacade(context: Context) {
     private val fallback = InMemoryPermissionStore()
     private val dbAvailable = AtomicBoolean(true)
 
-    fun create(tool: String, detail: String, scope: String): PermissionStore.PermissionRequest {
+    fun create(
+        tool: String,
+        detail: String,
+        scope: String,
+        identity: String = "",
+        capability: String = ""
+    ): PermissionStore.PermissionRequest {
         return try {
             if (dbAvailable.get()) {
-                dbStore.create(tool, detail, scope)
+                dbStore.create(tool, detail, scope, identity = identity, capability = capability)
             } else {
-                fallback.create(tool, detail, scope)
+                fallback.create(tool, detail, scope, identity = identity, capability = capability)
             }
         } catch (ex: Throwable) {
             Log.e(TAG, "Permission DB unavailable, falling back", ex)
             dbAvailable.set(false)
-            fallback.create(tool, detail, scope)
+            fallback.create(tool, detail, scope, identity = identity, capability = capability)
         }
     }
 
@@ -75,14 +81,22 @@ class PermissionStoreFacade(context: Context) {
         private val counter = AtomicLong(System.currentTimeMillis())
         private val items = ConcurrentHashMap<String, PermissionStore.PermissionRequest>()
 
-        fun create(tool: String, detail: String, scope: String): PermissionStore.PermissionRequest {
+        fun create(
+            tool: String,
+            detail: String,
+            scope: String,
+            identity: String,
+            capability: String
+        ): PermissionStore.PermissionRequest {
             val req = PermissionStore.PermissionRequest(
                 id = "p_${counter.incrementAndGet()}",
                 tool = tool,
                 detail = detail,
                 scope = scope,
                 status = "pending",
-                createdAt = System.currentTimeMillis()
+                createdAt = System.currentTimeMillis(),
+                identity = identity,
+                capability = capability
             )
             items[req.id] = req
             return req

@@ -9,14 +9,16 @@ class PermissionStore(context: Context) {
     private val dao = PlainDbProvider.get(context).permissionDao()
     private val counter = AtomicLong(System.currentTimeMillis())
 
-    fun create(tool: String, detail: String, scope: String): PermissionRequest {
+    fun create(tool: String, detail: String, scope: String, identity: String = "", capability: String = ""): PermissionRequest {
         val req = PermissionRequest(
             id = "p_${counter.incrementAndGet()}",
             tool = tool,
             detail = detail,
             scope = scope,
             status = "pending",
-            createdAt = System.currentTimeMillis()
+            createdAt = System.currentTimeMillis(),
+            identity = identity,
+            capability = capability
         )
         dao.upsert(req.toEntity())
         return req
@@ -47,7 +49,9 @@ class PermissionStore(context: Context) {
         val detail: String,
         val scope: String,
         val status: String,
-        val createdAt: Long
+        val createdAt: Long,
+        val identity: String,
+        val capability: String
     )
 
     private fun PermissionRequest.toEntity(): PermissionEntity {
@@ -57,7 +61,9 @@ class PermissionStore(context: Context) {
             detail = detail,
             scope = scope,
             status = status,
-            createdAt = createdAt
+            createdAt = createdAt,
+            identity = identity,
+            capability = capability
         )
     }
 
@@ -68,7 +74,9 @@ class PermissionStore(context: Context) {
             detail = detail,
             scope = scope,
             status = status,
-            createdAt = createdAt
+            createdAt = createdAt,
+            identity = identity,
+            capability = capability
         )
     }
 }

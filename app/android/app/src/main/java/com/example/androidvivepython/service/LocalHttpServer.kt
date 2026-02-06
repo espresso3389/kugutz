@@ -25,6 +25,7 @@ class LocalHttpServer(
     private val sshKeyStore = SshKeyStore(context)
     private val sshKeyPolicy = SshKeyPolicy(context)
     private val sshPinManager = SshPinManager(context)
+    private val deviceGrantStore = jp.espresso3389.kugutz.perm.DeviceGrantStoreFacade(context)
     private val agentTasks = java.util.concurrent.ConcurrentHashMap<String, AgentTask>()
 
     fun startServer(): Boolean {
@@ -108,7 +109,18 @@ class LocalHttpServer(
                 val detail = payload.optString("detail", "")
                 val requestedScope = payload.optString("scope", "once")
                 val scope = if (tool == "ssh_keys") "once" else requestedScope
-                val req = permissionStore.create(tool, detail, scope)
+                val headerIdentity = (session.headers["x-kugutz-identity"] ?: "").trim()
+                val identity = payload.optString("identity", "").trim().ifBlank { headerIdentity }
+                val capabilityFromTool = if (tool.startsWith("device.")) tool.removePrefix("device.").trim() else ""
+                val capability = payload.optString("capability", "").trim().ifBlank { capabilityFromTool }
+
+                val req = permissionStore.create(
+                    tool = tool,
+                    detail = detail,
+                    scope = scope,
+                    identity = identity,
+                    capability = capability
+                )
                 // Permission UX:
                 // - Always prompt immediately for sensitive actions where the user expects an interrupt.
                 // - Device permissions need both in-app consent and often Android runtime permissions.
@@ -128,6 +140,8 @@ class LocalHttpServer(
                         .put("tool", req.tool)
                         .put("detail", req.detail)
                         .put("scope", req.scope)
+                        .put("identity", req.identity)
+                        .put("capability", req.capability)
                 )
             }
             uri == "/permissions/pending" -> {
@@ -142,6 +156,8 @@ class LocalHttpServer(
                             .put("scope", req.scope)
                             .put("status", req.status)
                             .put("created_at", req.createdAt)
+                            .put("identity", req.identity)
+                            .put("capability", req.capability)
                     )
                 }
                 jsonResponse(JSONObject().put("items", arr))
@@ -160,6 +176,8 @@ class LocalHttpServer(
                         .put("scope", req.scope)
                         .put("status", req.status)
                         .put("created_at", req.createdAt)
+                        .put("identity", req.identity)
+                        .put("capability", req.capability)
                 )
             }
             uri.startsWith("/permissions/") && session.method == Method.POST -> {
@@ -176,6 +194,9 @@ class LocalHttpServer(
                     if (updated == null) {
                         notFound()
                     } else {
+                        if (status == "approved") {
+                            maybeGrantDeviceCapability(updated)
+                        }
                         jsonResponse(
                             JSONObject()
                                 .put("id", updated.id)
@@ -1135,6 +1156,28 @@ class LocalHttpServer(
         intent.putExtra(EXTRA_PERMISSION_DETAIL, detail)
         intent.putExtra(EXTRA_PERMISSION_BIOMETRIC, forceBiometric)
         context.sendBroadcast(intent)
+    }
+
+    private fun maybeGrantDeviceCapability(req: jp.espresso3389.kugutz.perm.PermissionStore.PermissionRequest) {
+        val tool = req.tool
+        if (!tool.startsWith("device.")) {
+            return
+        }
+        val identity = req.identity.trim()
+        val capability = req.capability.trim().ifBlank { tool.removePrefix("device.").trim() }
+        if (identity.isBlank() || capability.isBlank()) {
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        val expiresAt = when (req.scope) {
+            "persistent" -> 0L
+            "session" -> now + 60L * 60L * 1000L
+            "program" -> now + 10L * 60L * 1000L
+            "once" -> now + 2L * 60L * 1000L
+            else -> now + 10L * 60L * 1000L
+        }
+        deviceGrantStore.upsertGrant(identity, capability, req.scope, expiresAt)
     }
 
     private fun mimeTypeFor(name: String): String {

@@ -46,6 +46,10 @@ class BrainRuntime:
             "provider_url": "https://api.openai.com/v1/chat/completions",
             "model": "",
             "api_key_credential": "openai_api_key",
+            # Tool-call policy:
+            # - "auto": allow the model to answer without tools (default)
+            # - "required": if the user request implies device/state changes, require at least one tool call
+            "tool_policy": "auto",
             # Optional: allow the brain to read API keys from process env as a fallback
             # when vault storage isn't available (e.g., local dev on a build machine).
             # If empty, runtime uses a provider-based default mapping, e.g.:
@@ -66,6 +70,42 @@ class BrainRuntime:
             "max_actions": 6,
             "idle_sleep_ms": 800,
         }
+
+    def _needs_tool_for_text(self, text: str) -> bool:
+        # Keep this conservative: only require tools when the user is clearly asking
+        # for a local action or a state change.
+        t = (text or "").strip().lower()
+        if not t:
+            return False
+        keywords = (
+            "run ",
+            "execute",
+            "create ",
+            "write ",
+            "edit ",
+            "delete ",
+            "move ",
+            "copy ",
+            "list ",
+            "show ",
+            "check ",
+            "status",
+            "restart",
+            "start ",
+            "stop ",
+            "enable",
+            "disable",
+            "install",
+            "curl ",
+            "ssh",
+            "python",
+            "worker",
+            "device",
+            "file",
+            "directory",
+            "folder",
+        )
+        return any(k in t for k in keywords)
 
     def _env_key_name_for_credential(self, credential_name: str) -> str:
         # Keep mapping explicit (avoid guessing) but cover common providers.
@@ -358,6 +398,8 @@ class BrainRuntime:
         model = str(cfg.get("model") or "").strip()
         provider_url = str(cfg.get("provider_url") or "").strip()
         key_name = str(cfg.get("api_key_credential") or "").strip()
+        tool_policy = str(cfg.get("tool_policy") or "auto").strip().lower()
+        require_tool = tool_policy == "required" and self._needs_tool_for_text(str(item.get("text") or ""))
         if not model or not provider_url or not key_name:
             self._record_message(
                 "assistant",
@@ -379,6 +421,7 @@ class BrainRuntime:
         max_rounds = 4
         max_actions = max(1, min(int(self._config.get("max_actions", 6) or 6), 12))
         previous_response_id: Optional[str] = None
+        forced_rounds = 0
         pending_input: List[Dict[str, Any]] = [
             {
                 "role": "user",
@@ -411,6 +454,7 @@ class BrainRuntime:
             previous_response_id = payload.get("id")
 
             output_items = payload.get("output") or []
+            message_texts: List[str] = []
             for out in output_items:
                 if not isinstance(out, dict) or out.get("type") != "message":
                     continue
@@ -421,13 +465,36 @@ class BrainRuntime:
                         if t:
                             text_parts.append(t)
                 if text_parts:
-                    text = "\n".join(text_parts)
-                    self._record_message("assistant", text, {"item_id": item.get("id")})
-                    self._emit_log("brain_response", {"item_id": item.get("id"), "text": text[:300]})
+                    message_texts.append("\n".join(text_parts))
 
             calls = [o for o in output_items if isinstance(o, dict) and o.get("type") == "function_call"]
             if not calls:
+                # If we require tool calls for this user request, don't accept a "plain" response.
+                if require_tool and forced_rounds < 1:
+                    forced_rounds += 1
+                    pending_input = [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Tool policy is REQUIRED for this request. "
+                                "You MUST call one or more tools (device_api, shell_exec, write_file, sleep) "
+                                "to perform the action(s), then summarize after tool outputs are provided. "
+                                "Do not claim you executed anything without tool output."
+                            ),
+                        }
+                    ]
+                    continue
+
+                # Accept and record any assistant message text (if present).
+                for text in message_texts:
+                    self._record_message("assistant", text, {"item_id": item.get("id")})
+                    self._emit_log("brain_response", {"item_id": item.get("id"), "text": text[:300]})
                 return
+
+            # Record assistant message text only once we have tool calls for this round.
+            for text in message_texts:
+                self._record_message("assistant", text, {"item_id": item.get("id")})
+                self._emit_log("brain_response", {"item_id": item.get("id"), "text": text[:300]})
 
             pending_input = []
             for call in calls[:max_actions]:

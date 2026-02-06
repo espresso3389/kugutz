@@ -128,6 +128,110 @@ class ResponsesToolLoopTest(unittest.TestCase):
         finally:
             rt.requests.post = original_post
 
+    def test_tool_policy_required_forces_function_call_when_model_returns_text_only(self):
+        server_dir = Path(__file__).resolve().parents[1]
+        if str(server_dir) not in sys.path:
+            sys.path.insert(0, str(server_dir))
+        from agents import runtime as rt
+
+        storage = _FakeStorage()
+        shell_calls = []
+        post_calls = []
+
+        def emit_log(event: str, data: dict):
+            return None
+
+        def shell_exec(cmd: str, args: str, cwd: str):
+            shell_calls.append((cmd, args, cwd))
+            return {"status": "ok", "code": 0, "output": "123\n"}
+
+        def tool_invoke(tool: str, args: dict, request_id, detail: str):
+            return {"status": "ok", "tool": tool}
+
+        os.environ["OPENAI_API_KEY"] = "sk-test-env"
+
+        # 1st response: text-only (should be rejected when tool_policy=required)
+        # 2nd response: returns a tool call
+        # 3rd response: final assistant summary
+        def fake_post(url, headers=None, data=None, timeout=None):
+            post_calls.append(json.loads(data or "{}"))
+            idx = len(post_calls)
+            if idx == 1:
+                payload = {
+                    "id": "resp_1",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "Sure, I ran it."}],
+                        }
+                    ],
+                }
+            elif idx == 2:
+                payload = {
+                    "id": "resp_2",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "shell_exec",
+                            "call_id": "call_1",
+                            "arguments": json.dumps({"cmd": "python", "args": "-c \"print(123)\"", "cwd": ""}),
+                        }
+                    ],
+                }
+            else:
+                payload = {
+                    "id": "resp_3",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "Done, output was 123."}],
+                        }
+                    ],
+                }
+
+            class _Resp:
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return payload
+
+            return _Resp()
+
+        original_post = rt.requests.post
+        rt.requests.post = fake_post
+        try:
+            user_dir = Path("/tmp/kugutz-test-user")
+            user_dir.mkdir(parents=True, exist_ok=True)
+            brain = rt.BrainRuntime(
+                user_dir=user_dir,
+                storage=storage,
+                emit_log=emit_log,
+                shell_exec=shell_exec,
+                tool_invoke=tool_invoke,
+            )
+            brain.update_config(
+                {
+                    "enabled": True,
+                    "tool_policy": "required",
+                    "model": "gpt-test",
+                    "provider_url": "https://api.openai.com/v1/responses",
+                    "api_key_credential": "openai_api_key",
+                }
+            )
+
+            item = {"id": "chat_2", "kind": "chat", "text": "Run python -c print(123)", "meta": {}, "created_at": 0}
+            brain._process_with_responses_tools(item)
+
+            self.assertEqual(len(shell_calls), 1)
+
+            msgs = brain.list_messages(limit=50)
+            # The initial text-only claim should not be recorded (we forced a tool call instead).
+            self.assertFalse(any("Sure, I ran it." in (m.get("text") or "") for m in msgs))
+            self.assertTrue(any("Done, output was 123." in (m.get("text") or "") for m in msgs))
+        finally:
+            rt.requests.post = original_post
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -49,14 +49,6 @@ jobs:
           echo "/opt/gradle-8.2.1/bin" >> "$GITHUB_PATH"
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-      - name: Cache Android SDK/NDK
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.ANDROID_SDK_ROOT }}
-          key: ${{ runner.os }}-androidsdk-34-ndk-29.0.14206865
-          restore-keys: |
-            ${{ runner.os }}-androidsdk-34-
       - name: Install Android NDK
         run: |
           yes | sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;29.0.14206865"

@@ -62,6 +62,9 @@ class BrainRuntime:
                 "For remote-device tasks, you may propose SSH/SCP setup/use steps, but do not execute "
                 "ssh/scp commands unless those commands are explicitly supported by available actions. "
                 "If tool_invoke returns permission_required, respond with clear next step and stop. "
+                "Protocol: The runtime executes actions and returns tool_results to you in the next planning round. "
+                "After receiving tool_results, return another strict JSON object. "
+                "When done, return actions as [] and provide final user-facing responses. "
                 "Never assume hidden capabilities. Use only provided APIs and tools."
             ),
             "temperature": 0.2,
@@ -210,27 +213,40 @@ class BrainRuntime:
 
     def _process_item(self, item: Dict) -> None:
         self._emit_log("brain_item_started", {"id": item.get("id"), "kind": item.get("kind")})
-
-        plan = self._plan_with_cloud(item)
-        responses = plan.get("responses") if isinstance(plan, dict) else []
-        actions = plan.get("actions") if isinstance(plan, dict) else []
-
-        if isinstance(responses, list):
-            for text in responses:
-                if not isinstance(text, str):
-                    continue
-                self._record_message("assistant", text, {"item_id": item.get("id")})
-                self._emit_log("brain_response", {"item_id": item.get("id"), "text": text[:300]})
-
-        if not isinstance(actions, list):
-            actions = []
         max_actions = max(0, min(int(self._config.get("max_actions", 6) or 6), 12))
-        for action in actions[:max_actions]:
-            if not isinstance(action, dict):
-                continue
-            self._execute_action(item, action)
+        max_rounds = 3
+        tool_results: List[Dict] = []
+        total_actions = 0
 
-        self._emit_log("brain_item_done", {"id": item.get("id"), "actions": min(len(actions), max_actions)})
+        for round_idx in range(max_rounds):
+            plan = self._plan_with_cloud(item, tool_results)
+            responses = plan.get("responses") if isinstance(plan, dict) else []
+            actions = plan.get("actions") if isinstance(plan, dict) else []
+
+            if isinstance(responses, list):
+                for text in responses:
+                    if not isinstance(text, str):
+                        continue
+                    self._record_message("assistant", text, {"item_id": item.get("id")})
+                    self._emit_log("brain_response", {"item_id": item.get("id"), "text": text[:300]})
+
+            if not isinstance(actions, list):
+                actions = []
+            if not actions:
+                break
+
+            round_results: List[Dict] = []
+            for action in actions[:max_actions]:
+                if not isinstance(action, dict):
+                    continue
+                result = self._execute_action(item, action)
+                round_results.append({"action": action, "result": result})
+                total_actions += 1
+            tool_results = round_results
+            if not round_results:
+                break
+
+        self._emit_log("brain_item_done", {"id": item.get("id"), "actions": total_actions})
 
     def _heuristic_plan(self, item: Dict) -> Dict:
         text = str(item.get("text") or "").lower()
@@ -321,7 +337,7 @@ class BrainRuntime:
 
         return {"responses": responses, "actions": actions}
 
-    def _plan_with_cloud(self, item: Dict) -> Dict:
+    def _plan_with_cloud(self, item: Dict, tool_results: Optional[List[Dict]] = None) -> Dict:
         cfg = self.get_config()
         model = str(cfg.get("model") or "").strip()
         provider_url = str(cfg.get("provider_url") or "").strip()
@@ -350,7 +366,7 @@ class BrainRuntime:
             "item": item,
             "recent_messages": history,
             "constraints": {
-                "allowed_commands": ["python", "pip", "uv"],
+                "allowed_commands": ["python", "pip", "uv", "curl"],
                 "device_api_actions": [
                     "python.status",
                     "python.restart",
@@ -365,6 +381,7 @@ class BrainRuntime:
                 ],
                 "root": str(self._user_dir),
             },
+            "tool_results": tool_results or [],
         }
         planner_prompt = (
             "Return strict JSON object with keys responses (string[]) and actions (object[]). "
@@ -381,6 +398,8 @@ class BrainRuntime:
             "{\"responses\":[\"Checking current SSH and Python status.\"],"
             "\"actions\":[{\"type\":\"tool_invoke\",\"tool\":\"device_api\",\"args\":{\"action\":\"ssh.status\",\"payload\":{},\"detail\":\"Check SSH service status\"}},"
             "{\"type\":\"tool_invoke\",\"tool\":\"device_api\",\"args\":{\"action\":\"python.status\",\"payload\":{},\"detail\":\"Check Python worker status\"}}]}. "
+            "If Input.tool_results is non-empty, use those results to decide next actions or final responses. "
+            "Set actions=[] when the task is complete. "
             "Input:\n" + json.dumps(user_payload)
         )
         if provider_url.rstrip("/").endswith("/responses"):
@@ -466,7 +485,7 @@ class BrainRuntime:
         target.write_text(content, encoding="utf-8")
         return {"status": "ok", "path": str(target)}
 
-    def _execute_action(self, item: Dict, action: Dict) -> None:
+    def _execute_action(self, item: Dict, action: Dict) -> Dict:
         a_type = str(action.get("type") or "").strip()
         result: Dict
 
@@ -513,3 +532,4 @@ class BrainRuntime:
                 "result": result,
             },
         )
+        return result

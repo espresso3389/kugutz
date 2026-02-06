@@ -15,9 +15,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.2.1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -45,6 +42,11 @@ jobs:
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Install Gradle
+        run: |
+          curl -fsSL -o /tmp/gradle-8.2.1-bin.zip https://services.gradle.org/distributions/gradle-8.2.1-bin.zip
+          sudo unzip -q -o /tmp/gradle-8.2.1-bin.zip -d /opt
+          echo "/opt/gradle-8.2.1/bin" >> "$GITHUB_PATH"
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
       - name: Cache Android SDK/NDK

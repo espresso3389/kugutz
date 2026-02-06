@@ -76,6 +76,13 @@ class SshdManager(private val context: Context) {
                 return false
             }
         }
+        // Outbound ssh/scp (dbclient) defaults to ~/.ssh/id_dropbear.
+        // Ensure client key exists and is distinct from the host key.
+        val clientKey = File(sshDir, "id_dropbear")
+        val ok = ensureClientKey(dropbearkey, hostKey, clientKey)
+        if (!ok) {
+            Log.w(TAG, "Failed to prepare client key")
+        }
         val authKeys = File(sshDir, "authorized_keys")
         if (!authKeys.exists()) {
             authKeys.writeText("")
@@ -151,7 +158,7 @@ class SshdManager(private val context: Context) {
 
     fun status(): SshStatus {
         val running = processRef.get()?.isAlive == true || isPortOpen(getPort())
-        val keyInfo = getHostKeyInfo()
+        val clientKeyInfo = getClientKeyInfo()
         return SshStatus(
             enabled = isEnabled(),
             running = running,
@@ -159,8 +166,8 @@ class SshdManager(private val context: Context) {
             noauthEnabled = isNoAuthEnabled(),
             homeDir = File(context.filesDir, "user").absolutePath,
             authorizedKeys = File(context.filesDir, "user/.ssh/authorized_keys").absolutePath,
-            hostKeyFingerprint = keyInfo.first,
-            hostKeyPublic = keyInfo.second
+            clientKeyFingerprint = clientKeyInfo.first,
+            clientKeyPublic = clientKeyInfo.second
         )
     }
 
@@ -263,15 +270,15 @@ class SshdManager(private val context: Context) {
         }
     }
 
-    private fun getHostKeyInfo(): Pair<String, String> {
-        val hostKey = File(context.filesDir, "protected/ssh/dropbear_host_key")
-        if (!hostKey.exists()) return Pair("", "")
+    private fun getClientKeyInfo(): Pair<String, String> {
+        val clientKey = File(context.filesDir, "user/.ssh/id_dropbear")
+        if (!clientKey.exists()) return Pair("", "")
         val binDir = File(context.filesDir, "bin")
         val dropbearkey = resolveBinary("libdropbearkey.so", File(binDir, "dropbearkey"))
             ?: return Pair("", "")
         return try {
             val proc = ProcessBuilder(
-                dropbearkey.absolutePath, "-y", "-f", hostKey.absolutePath
+                dropbearkey.absolutePath, "-y", "-f", clientKey.absolutePath
             ).redirectErrorStream(true).start()
             val output = proc.inputStream.bufferedReader().readText()
             val rc = proc.waitFor()
@@ -287,7 +294,7 @@ class SshdManager(private val context: Context) {
             }
             Pair(fingerprint, pubKey)
         } catch (ex: Exception) {
-            Log.w(TAG, "Failed to read host key info", ex)
+            Log.w(TAG, "Failed to read client key info", ex)
             Pair("", "")
         }
     }
@@ -305,6 +312,45 @@ class SshdManager(private val context: Context) {
             rc == 0 && hostKey.exists()
         } catch (ex: Exception) {
             Log.e(TAG, "dropbearkey failed", ex)
+            false
+        }
+    }
+
+    private fun ensureClientKey(dropbearkey: File, hostKey: File, clientKey: File): Boolean {
+        return try {
+            clientKey.parentFile?.mkdirs()
+            if (clientKey.exists()) {
+                // Keep existing client key unless it accidentally matches the host key.
+                if (hostKey.exists() && hostKey.readBytes().contentEquals(clientKey.readBytes())) {
+                    Log.w(TAG, "Client key matches host key; rotating client key")
+                } else {
+                    clientKey.setReadable(true, true)
+                    clientKey.setWritable(true, true)
+                    clientKey.setExecutable(false, false)
+                    return clientKey.length() > 0
+                }
+            }
+            if (clientKey.exists() && !clientKey.delete()) {
+                Log.w(TAG, "Failed to remove existing client key before regeneration")
+                return false
+            }
+            val proc = ProcessBuilder(
+                dropbearkey.absolutePath,
+                "-t",
+                "ed25519",
+                "-f",
+                clientKey.absolutePath
+            ).start()
+            val rc = proc.waitFor()
+            if (rc != 0 || !clientKey.exists()) {
+                return false
+            }
+            clientKey.setReadable(true, true)
+            clientKey.setWritable(true, true)
+            clientKey.setExecutable(false, false)
+            true
+        } catch (ex: Exception) {
+            Log.e(TAG, "Failed to prepare client key", ex)
             false
         }
     }
@@ -364,8 +410,8 @@ class SshdManager(private val context: Context) {
         val noauthEnabled: Boolean,
         val homeDir: String,
         val authorizedKeys: String,
-        val hostKeyFingerprint: String = "",
-        val hostKeyPublic: String = ""
+        val clientKeyFingerprint: String = "",
+        val clientKeyPublic: String = ""
     )
 
     companion object {

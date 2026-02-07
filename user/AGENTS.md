@@ -32,10 +32,9 @@ This file documents how the on-device AI agent should operate. It is referenced 
 ## UVC Naming
 
 - UVC native lib: `libuvc.so` (bundled by app)
-- Python package to install (common): `pupil-labs-uvc`
-- Python import name: `pyuvc`
+- UVC is controlled via the app's `device_api` USB/UVC actions (not via a Python UVC package).
 
-Avoid `pip install uvc` when you mean camera UVC control.
+Avoid `pip install uvc` (and similar names) when you mean camera UVC control on Android.
 
 Practical flow:
 

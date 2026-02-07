@@ -10,8 +10,6 @@ Goal:
 At the moment we ship:
 - `opencv-python` facade: provides `opencv_android` helper + a `cv2` stub explaining that the
   real bindings are not bundled.
-- `pupil-labs-uvc` facade: provides `pyuvc.load()` helper for the app-bundled `libuvc.so`.
-- `pyuvc` facade: compatibility alias; provides the same `pyuvc.load()` helper.
 
 This script intentionally avoids external build tooling (setuptools/build/wheel).
 """
@@ -137,19 +135,6 @@ def main() -> int:
             "dist": "opencv-python",
             "src": repo / "server/facades/opencv-python/src",
             "version": opencv_version,
-        },
-        {
-            # `pyuvc` is currently not published on PyPI. We ship a small facade so that
-            # `pip install pyuvc` can resolve offline from our wheelhouse.
-            "dist": "pyuvc",
-            "src": repo / "server/facades/pyuvc/src",
-            "version": os.environ.get("KUGUTZ_FACADE_PYUVC_VERSION", "").strip() or "0.0.0+kugutz1",
-        },
-        {
-            # `pupil-labs-uvc` is the better-known distribution name; the import is still `pyuvc`.
-            "dist": "pupil-labs-uvc",
-            "src": repo / "server/facades/pupil-labs-uvc/src",
-            "version": os.environ.get("KUGUTZ_FACADE_PUPIL_LABS_UVC_VERSION", "").strip() or "0.0.0+kugutz1",
         },
     ]
 

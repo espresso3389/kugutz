@@ -69,9 +69,8 @@ dp.ensure_device("camera2", detail="capture a photo", scope="session")
 
 ## Package Name Gotchas (UVC / USB)
 
-When dealing with USB Video Class (UVC) cameras:
+When dealing with USB Video Class (UVC) cameras on Android:
 - Native library: `libuvc.so` (bundled by the app in `jniLibs/`)
-- Common Python distribution name: `pupil-labs-uvc`
-- Python import/module name: `pyuvc`
+- Use `device_api` USB/UVC actions (e.g. `usb.*`, `uvc.ptz.*`) rather than trying to install Python UVC bindings.
 
-Do not `pip install uvc` for camera control; that name is often unrelated.
+Do not `pip install uvc` for camera control; that name is often unrelated and typically won't work on Android.

@@ -443,18 +443,14 @@ def _shell_exec_impl(cmd: str, raw_args: str, cwd: str) -> Dict:
             if cmd == "pip":
                 # Heuristic guardrail:
                 # People (and LLM agents) often confuse the UVC camera bindings package name.
-                # - The widely used distribution name is `pupil-labs-uvc` (import name: `pyuvc`).
+                # - On Android we control UVC devices via the app's USB/UVC device_api actions.
                 # - A different/unrelated package name `uvc` exists in some ecosystems.
-                # If the user asks for both `uvc` and `pyuvc`/`pupil-labs-uvc` in one install,
-                # treat `uvc` as a likely mistake to avoid hard failures on Android/offline.
+                # If the user asks for `uvc`, warn and continue; don't special-case installs.
                 if args and args[0] == "install":
-                    has_pyuvc = any(a == "pyuvc" for a in args)
-                    has_pupil = any(a == "pupil-labs-uvc" for a in args)
-                    if (has_pyuvc or has_pupil) and any(a == "uvc" for a in args):
-                        args = [a for a in args if a != "uvc"]
+                    if any(a == "uvc" for a in args):
                         print(
-                            "note: dropped `uvc` from pip install args (likely confusion). "
-                            "For UVC camera bindings use `pupil-labs-uvc` (import: `pyuvc`)."
+                            "note: `pip install uvc` is usually not what you want on Android. "
+                            "Use device_api USB/UVC actions (usb.*, uvc.ptz.*) for camera control."
                         )
 
                 # Avoid attempting source builds on-device by default (no compiler toolchain).

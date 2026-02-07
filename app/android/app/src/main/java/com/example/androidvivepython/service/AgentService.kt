@@ -13,6 +13,8 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import jp.espresso3389.kugutz.ui.MainActivity
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class AgentService : Service() {
     private lateinit var runtimeManager: PythonRuntimeManager
@@ -22,8 +24,8 @@ class AgentService : Service() {
     private var sshPinManager: SshPinManager? = null
     private var sshNoAuthModeManager: SshNoAuthModeManager? = null
     private var noAuthPromptManager: SshNoAuthPromptManager? = null
-    private var authModeNotifier: SshAuthModeNotificationManager? = null
-    private var authModeMonitor: SshAuthModeMonitor? = null
+    private val sshAuthExecutor = Executors.newSingleThreadScheduledExecutor()
+    private var lastActiveAuthMode: String = ""
     private var permissionReceiverRegistered = false
     private val permissionPromptReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -52,13 +54,7 @@ class AgentService : Service() {
         sshPinManager = SshPinManager(this)
         sshNoAuthModeManager = SshNoAuthModeManager(this)
         noAuthPromptManager = SshNoAuthPromptManager(this).also { it.start() }
-        authModeNotifier = SshAuthModeNotificationManager(this)
-        authModeMonitor = SshAuthModeMonitor(
-            sshdManager = sshdManager!!,
-            pinManager = sshPinManager!!,
-            noAuthModeManager = sshNoAuthModeManager!!,
-            notifier = authModeNotifier!!
-        ).also { it.start() }
+        startSshAuthMonitor()
         localServer = LocalHttpServer(
             this,
             runtimeManager,
@@ -110,10 +106,7 @@ class AgentService : Service() {
         unregisterPermissionPromptReceiver()
         vaultServer?.stop()
         vaultServer = null
-        authModeMonitor?.stop()
-        authModeMonitor = null
-        authModeNotifier?.cancel()
-        authModeNotifier = null
+        sshAuthExecutor.shutdownNow()
         noAuthPromptManager?.stop()
         noAuthPromptManager = null
         sshNoAuthModeManager = null
@@ -124,6 +117,63 @@ class AgentService : Service() {
         localServer = null
         runtimeManager.stop()
         super.onDestroy()
+    }
+
+    private fun startSshAuthMonitor() {
+        sshAuthExecutor.scheduleAtFixedRate({ tickSshAuth() }, 0, 1, TimeUnit.SECONDS)
+    }
+
+    private fun tickSshAuth() {
+        try {
+            val sshd = sshdManager ?: return
+            val pinMgr = sshPinManager ?: return
+            val noAuthMgr = sshNoAuthModeManager ?: return
+
+            val pin = pinMgr.status()
+            if (pin.expired) {
+                android.util.Log.i("AgentService", "PIN auth expired; exiting PIN mode")
+                pinMgr.stopPin()
+                sshd.exitPinMode()
+            }
+
+            val noauth = noAuthMgr.status()
+            if (noauth.expired) {
+                android.util.Log.i("AgentService", "Notification auth expired; exiting notification mode")
+                noAuthMgr.stop()
+                sshd.exitNotificationMode()
+            }
+
+            val authMode = sshd.getAuthMode()
+            val activeMode = when {
+                authMode == SshdManager.AUTH_MODE_PIN && pin.active -> SshdManager.AUTH_MODE_PIN
+                authMode == SshdManager.AUTH_MODE_NOTIFICATION && noauth.active -> SshdManager.AUTH_MODE_NOTIFICATION
+                else -> ""
+            }
+
+            if (activeMode != lastActiveAuthMode) {
+                // Fire a heads-up style alert when enabling a temporary auth mode.
+                if (activeMode.isNotBlank()) {
+                    showSshAuthAlert(activeMode, when (activeMode) {
+                        SshdManager.AUTH_MODE_PIN -> pin.expiresAt
+                        SshdManager.AUTH_MODE_NOTIFICATION -> noauth.expiresAt
+                        else -> null
+                    })
+                }
+                lastActiveAuthMode = activeMode
+            }
+
+            // Keep the (always visible) foreground service notification as the primary status indicator.
+            val fg = buildForegroundNotification(
+                activeMode,
+                when (activeMode) {
+                    SshdManager.AUTH_MODE_PIN -> pin.expiresAt
+                    SshdManager.AUTH_MODE_NOTIFICATION -> noauth.expiresAt
+                    else -> null
+                }
+            )
+            startForeground(NOTIFICATION_ID, fg)
+        } catch (_: Exception) {
+        }
     }
 
     private fun registerPermissionPromptReceiver() {
@@ -191,6 +241,10 @@ class AgentService : Service() {
     }
 
     private fun buildNotification(): Notification {
+        return buildForegroundNotification("", null)
+    }
+
+    private fun buildForegroundNotification(activeMode: String, expiresAt: Long?): Notification {
         val channelId = "agent_service"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -202,11 +256,125 @@ class AgentService : Service() {
             manager.createNotificationChannel(channel)
         }
 
-        return NotificationCompat.Builder(this, channelId)
+        val builder = NotificationCompat.Builder(this, channelId)
             .setContentTitle("Agent Service")
-            .setContentText("Running local Python service")
+            .setContentText(foregroundText(activeMode, expiresAt))
             .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+
+        when (activeMode) {
+            SshdManager.AUTH_MODE_PIN -> builder.addAction(
+                android.R.drawable.ic_delete,
+                "Stop PIN",
+                PendingIntent.getService(
+                    this,
+                    1001,
+                    Intent(this, AgentService::class.java).apply { action = ACTION_SSH_PIN_STOP },
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+            SshdManager.AUTH_MODE_NOTIFICATION -> builder.addAction(
+                android.R.drawable.ic_delete,
+                "Stop",
+                PendingIntent.getService(
+                    this,
+                    1002,
+                    Intent(this, AgentService::class.java).apply { action = ACTION_SSH_NOAUTH_STOP },
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+            else -> {}
+        }
+
+        return builder.build()
+    }
+
+    private fun showSshAuthAlert(activeMode: String, expiresAt: Long?) {
+        val channelId = "ssh_auth_alerts"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                channelId,
+                "SSH Auth Alerts",
+                NotificationManager.IMPORTANCE_HIGH
+            )
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+
+        val stopAction = when (activeMode) {
+            SshdManager.AUTH_MODE_PIN -> NotificationCompat.Action(
+                android.R.drawable.ic_delete,
+                "Stop PIN",
+                PendingIntent.getService(
+                    this,
+                    2001,
+                    Intent(this, AgentService::class.java).apply { action = ACTION_SSH_PIN_STOP },
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+            SshdManager.AUTH_MODE_NOTIFICATION -> NotificationCompat.Action(
+                android.R.drawable.ic_delete,
+                "Stop",
+                PendingIntent.getService(
+                    this,
+                    2002,
+                    Intent(this, AgentService::class.java).apply { action = ACTION_SSH_NOAUTH_STOP },
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+            else -> null
+        }
+
+        val title = when (activeMode) {
+            SshdManager.AUTH_MODE_PIN -> "SSHD: PIN auth enabled"
+            SshdManager.AUTH_MODE_NOTIFICATION -> "SSHD: Notification auth enabled"
+            else -> "SSHD auth enabled"
+        }
+        val text = foregroundText(activeMode, expiresAt)
+
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val openPi = PendingIntent.getActivity(
+            this,
+            2003,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notif = NotificationCompat.Builder(this, channelId)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(openPi)
+            .setTimeoutAfter(30000)
+            .also { b -> if (stopAction != null) b.addAction(stopAction) }
             .build()
+
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(82001, notif)
+    }
+
+    private fun foregroundText(activeMode: String, expiresAt: Long?): String {
+        if (activeMode.isBlank()) return "Running local Python service"
+        val remaining = formatRemaining(expiresAt)
+        return when (activeMode) {
+            SshdManager.AUTH_MODE_PIN -> "SSHD: PIN auth active" + if (remaining.isNotBlank()) " (expires in $remaining)" else ""
+            SshdManager.AUTH_MODE_NOTIFICATION -> "SSHD: Notification auth active" + if (remaining.isNotBlank()) " (expires in $remaining)" else ""
+            else -> "SSHD: auth active"
+        }
+    }
+
+    private fun formatRemaining(expiresAt: Long?): String {
+        if (expiresAt == null) return ""
+        val sec = ((expiresAt - System.currentTimeMillis()) / 1000L).coerceAtLeast(0)
+        val m = sec / 60
+        val s = sec % 60
+        return if (m > 0) "${m}m ${s}s" else "${s}s"
     }
 
     companion object {

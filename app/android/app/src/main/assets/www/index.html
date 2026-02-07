@@ -139,6 +139,26 @@
         border: 1px solid var(--border);
         border-bottom-left-radius: 4px;
       }
+      .msg.debug {
+        border-style: dashed;
+        border-color: rgba(245,158,11,0.45);
+        background: var(--amber-soft);
+      }
+      .msg.assistant.debug { color: var(--ink); }
+      .msg.debug::before {
+        content: "DEBUG";
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.6px;
+        color: var(--amber);
+        background: rgba(245,158,11,0.12);
+        border: 1px solid rgba(245,158,11,0.35);
+        border-radius: var(--radius-full);
+        padding: 2px 8px;
+        margin: 0 10px 6px 0;
+        vertical-align: middle;
+      }
       .msg.error {
         align-self: center;
         background: var(--red-soft);
@@ -983,6 +1003,7 @@
       let conversation = [];
       let streaming = false;
       let chatSessionId = "";
+      let lastServerTs = 0;
 
       function genSessionId() {
         return "s_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
@@ -1024,27 +1045,44 @@
         } catch (_) {}
       }
 
-      function addMsg(role, content) {
+      function isNearBottom(el, slackPx) {
+        try {
+          const slack = typeof slackPx === "number" ? slackPx : 120;
+          return (el.scrollHeight - el.scrollTop - el.clientHeight) <= slack;
+        } catch (_) {
+          return true;
+        }
+      }
+
+      function addMsg(role, content, meta) {
         if (chatWelcome.parentNode) chatWelcome.remove();
+        const shouldScroll = isNearBottom(chatMessages, 140);
         const div = document.createElement("div");
-        div.className = "msg " + role;
+        const m = (meta && typeof meta === "object") ? meta : {};
+        const isDebug = !!(m.debug);
+        div.className = "msg " + role + (isDebug ? " debug" : "");
+        if (m.item_id) div.dataset.itemId = String(m.item_id);
+        if (m.session_id) div.dataset.sessionId = String(m.session_id);
+        if (m.debug) div.dataset.debug = "1";
+        if (meta && meta._ts) div.dataset.ts = String(meta._ts);
         if (role === "assistant" || role === "user") {
           div.innerHTML = renderMarkdown(content);
         } else {
           div.textContent = content;
         }
         chatMessages.appendChild(div);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
+        if (shouldScroll || isDebug) chatMessages.scrollTop = chatMessages.scrollHeight;
         return div;
       }
 
       function addThinkingIndicator() {
         if (chatWelcome.parentNode) chatWelcome.remove();
+        const shouldScroll = isNearBottom(chatMessages, 140);
         const div = document.createElement("div");
         div.className = "msg assistant";
         div.innerHTML = '<div class="thinking-dots"><span></span><span></span><span></span></div>';
         chatMessages.appendChild(div);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
+        if (shouldScroll) chatMessages.scrollTop = chatMessages.scrollHeight;
         return div;
       }
 
@@ -1055,16 +1093,72 @@
           const data = await res.json().catch(() => ({}));
           const list = Array.isArray(data.messages) ? data.messages : [];
           const rebuilt = [];
+          let maxTs = 0;
           for (const msg of list) {
             if (!msg || (msg.role !== "user" && msg.role !== "assistant")) continue;
             if (typeof msg.text !== "string" || !msg.text.trim()) continue;
-            rebuilt.push({ role: msg.role, content: msg.text });
+            maxTs = Math.max(maxTs, Number(msg.ts || 0));
+            rebuilt.push({ role: msg.role, content: msg.text, meta: msg.meta || {}, ts: Number(msg.ts || 0) });
           }
           if (!rebuilt.length) return;
-          conversation = rebuilt.slice(-200);
+          lastServerTs = Math.max(lastServerTs, maxTs);
+          conversation = rebuilt.slice(-200).map(m => ({ role: m.role, content: m.content, meta: m.meta || {}, ts: m.ts || 0 }));
           chatMessages.textContent = "";
-          for (const msg of conversation) addMsg(msg.role, msg.content);
+          for (const msg of conversation) addMsg(msg.role, msg.content, Object.assign({}, msg.meta || {}, { _ts: msg.ts || 0 }));
           saveConversation();
+        } catch (_) {}
+      }
+
+      function findRenderedByItem(role, itemId) {
+        if (!itemId) return null;
+        try {
+          const esc = (typeof CSS !== "undefined" && CSS.escape) ? CSS.escape : (s) => String(s).replace(/"/g, '\\"');
+          return chatMessages.querySelector('.msg.' + role + '[data-item-id="' + esc(String(itemId)) + '"]');
+        } catch (_) {
+          return null;
+        }
+      }
+
+      async function pollServerMessages() {
+        // Keep chat UI updated even when messages are injected by the system (e.g., debug comments).
+        if (!chatSessionId) return;
+        try {
+          const res = await fetch(API + "/brain/messages?limit=200&session_id=" + encodeURIComponent(chatSessionId));
+          if (!res.ok) return;
+          const data = await res.json().catch(() => ({}));
+          const list = Array.isArray(data.messages) ? data.messages : [];
+          let maxTs = lastServerTs;
+          for (const msg of list) {
+            if (!msg || (msg.role !== "user" && msg.role !== "assistant")) continue;
+            const text = (typeof msg.text === "string") ? msg.text.trim() : "";
+            if (!text) continue;
+            const ts = Number(msg.ts || 0);
+            const meta = (msg && msg.meta && typeof msg.meta === "object") ? msg.meta : {};
+            maxTs = Math.max(maxTs, ts);
+            if (ts && ts <= lastServerTs) continue;
+
+            // De-dupe: if we already rendered this item_id bubble locally, upgrade it instead of appending.
+            const itemId = meta.item_id || "";
+            if (itemId) {
+              const existing = findRenderedByItem(msg.role, itemId);
+              if (existing) {
+                existing.dataset.ts = String(ts || "");
+                if (meta.debug) existing.classList.add("debug");
+                if (msg.role === "assistant" && existing.querySelector(".thinking-dots")) {
+                  existing.innerHTML = renderMarkdown(text);
+                }
+                continue;
+              }
+            }
+
+            addMsg(msg.role, text, Object.assign({}, meta, { _ts: ts }));
+            conversation.push({ role: msg.role, content: text, meta: meta, ts: ts });
+          }
+          if (maxTs > lastServerTs) {
+            lastServerTs = maxTs;
+            conversation = conversation.slice(-220);
+            saveConversation();
+          }
         } catch (_) {}
       }
 
@@ -1079,6 +1173,7 @@
       chatSend.addEventListener("click", sendChat);
       restoreConversation();
       syncConversationFromServer();
+      setInterval(pollServerMessages, 900);
 
       async function sendChat() {
         if (streaming) return;
@@ -1089,12 +1184,12 @@
 
         conversation.push({ role: "user", content: text });
         saveConversation();
-        addMsg("user", text);
+        const uDiv = addMsg("user", text, { local_echo: true });
 
-        await sendAgentChat(text);
+        await sendAgentChat(text, uDiv);
       }
 
-      async function sendAgentChat(text) {
+      async function sendAgentChat(text, uDiv) {
         streaming = true;
         chatSend.disabled = true;
         const aDiv = addThinkingIndicator();
@@ -1132,6 +1227,10 @@
           if (!itemId) {
             throw new Error("Agent item id missing");
           }
+          try {
+            if (uDiv) uDiv.dataset.itemId = String(itemId);
+            aDiv.dataset.itemId = String(itemId);
+          } catch (_) {}
 
           const answer = await waitForAgentReply(itemId);
           if (!answer) {
@@ -1142,7 +1241,7 @@
 
           if (cleaned) {
             aDiv.innerHTML = renderMarkdown(cleaned);
-            conversation.push({ role: "assistant", content: cleaned });
+            conversation.push({ role: "assistant", content: cleaned, meta: { item_id: itemId }, ts: Date.now() });
             saveConversation();
           } else {
             aDiv.remove();

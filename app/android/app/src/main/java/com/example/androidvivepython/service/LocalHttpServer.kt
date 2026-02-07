@@ -11,9 +11,14 @@ import android.os.Build
 import android.app.PendingIntent
 import android.util.Log
 import fi.iki.elonen.NanoHTTPD
+import fi.iki.elonen.NanoWSD
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.concurrent.CopyOnWriteArrayList
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
@@ -33,7 +38,7 @@ class LocalHttpServer(
     private val sshdManager: SshdManager,
     private val sshPinManager: SshPinManager,
     private val sshNoAuthModeManager: SshNoAuthModeManager
-) : NanoHTTPD(HOST, PORT) {
+) : NanoWSD(HOST, PORT) {
     private val uiRoot = File(context.filesDir, "www")
     private val permissionStore = PermissionStoreFacade(context)
     private val permissionPrefs = PermissionPrefs(context)
@@ -46,6 +51,7 @@ class LocalHttpServer(
     private val lastPermissionPromptAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val usbConnections = ConcurrentHashMap<String, UsbDeviceConnection>()
     private val usbDevicesByHandle = ConcurrentHashMap<String, UsbDevice>()
+    private val usbStreams = ConcurrentHashMap<String, UsbStreamState>()
 
     private val usbManager: UsbManager by lazy {
         context.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -72,7 +78,7 @@ class LocalHttpServer(
         }
     }
 
-    override fun serve(session: IHTTPSession): Response {
+    override fun serveHttp(session: IHTTPSession): Response {
         val uri = session.uri ?: "/"
         // NanoHTTPD keeps connections alive; if we return early on a POST without consuming the body,
         // leftover bytes can corrupt the next request line (e.g. "{}POST ...").
@@ -543,6 +549,27 @@ class LocalHttpServer(
                     Log.e(TAG, "USB iso_transfer handler failed", ex)
                     jsonError(Response.Status.INTERNAL_ERROR, "usb_iso_transfer_handler_failed")
                 }
+            }
+            (uri == "/usb/stream/start" || uri == "/usb/stream/start/") && session.method == Method.POST -> {
+                return try {
+                    val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                    handleUsbStreamStart(payload)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "USB stream/start handler failed", ex)
+                    jsonError(Response.Status.INTERNAL_ERROR, "usb_stream_start_handler_failed")
+                }
+            }
+            (uri == "/usb/stream/stop" || uri == "/usb/stream/stop/") && session.method == Method.POST -> {
+                return try {
+                    val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                    handleUsbStreamStop(payload)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "USB stream/stop handler failed", ex)
+                    jsonError(Response.Status.INTERNAL_ERROR, "usb_stream_stop_handler_failed")
+                }
+            }
+            (uri == "/usb/stream/status" || uri == "/usb/stream/status/") && session.method == Method.GET -> {
+                return handleUsbStreamStatus()
             }
             uri == "/ssh/status" -> {
                 val status = sshdManager.status()
@@ -1040,6 +1067,301 @@ class LocalHttpServer(
                 .put("packets", packets)
                 .put("data_b64", android.util.Base64.encodeToString(payloadBytes, android.util.Base64.NO_WRAP))
         )
+    }
+
+    private data class UsbStreamClient(
+        val socket: Socket,
+        val out: java.io.BufferedOutputStream,
+    )
+
+    private data class UsbStreamState(
+        val id: String,
+        val mode: String,
+        val handle: String,
+        val endpointAddress: Int,
+        val interfaceId: Int,
+        val altSetting: Int,
+        val tcpPort: Int,
+        val serverSocket: ServerSocket,
+        val stop: java.util.concurrent.atomic.AtomicBoolean,
+        val clients: CopyOnWriteArrayList<UsbStreamClient>,
+        val wsClients: CopyOnWriteArrayList<NanoWSD.WebSocket>,
+        val acceptThread: Thread,
+        val ioThread: Thread,
+    )
+
+    private fun writeFrameHeader(out: java.io.OutputStream, type: Int, length: Int) {
+        out.write(type and 0xFF)
+        // u32 little-endian length
+        out.write(length and 0xFF)
+        out.write((length ushr 8) and 0xFF)
+        out.write((length ushr 16) and 0xFF)
+        out.write((length ushr 24) and 0xFF)
+    }
+
+    private fun broadcastUsbStream(state: UsbStreamState, type: Int, payload: ByteArray) {
+        // TCP clients: [u8 type][u32le length][payload]
+        val dead = ArrayList<UsbStreamClient>()
+        for (c in state.clients) {
+            try {
+                writeFrameHeader(c.out, type, payload.size)
+                c.out.write(payload)
+                c.out.flush()
+            } catch (_: Exception) {
+                dead.add(c)
+            }
+        }
+        for (c in dead) {
+            state.clients.remove(c)
+            runCatching { c.socket.close() }
+        }
+
+        // WS clients: one binary message: [u8 type] + payload
+        val wsDead = ArrayList<NanoWSD.WebSocket>()
+        val msg = ByteArray(1 + payload.size)
+        msg[0] = (type and 0xFF).toByte()
+        java.lang.System.arraycopy(payload, 0, msg, 1, payload.size)
+        for (ws in state.wsClients) {
+            try {
+                if (ws.isOpen) {
+                    ws.send(msg)
+                } else {
+                    wsDead.add(ws)
+                }
+            } catch (_: Exception) {
+                wsDead.add(ws)
+            }
+        }
+        for (ws in wsDead) {
+            state.wsClients.remove(ws)
+        }
+    }
+
+    private fun handleUsbStreamStart(payload: JSONObject): Response {
+        val handle = payload.optString("handle", "").trim()
+        if (handle.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "handle_required")
+        val conn = usbConnections[handle] ?: return jsonError(Response.Status.NOT_FOUND, "handle_not_found")
+        val dev = usbDevicesByHandle[handle] ?: return jsonError(Response.Status.NOT_FOUND, "device_not_found")
+
+        val mode = payload.optString("mode", "bulk_in").trim().ifBlank { "bulk_in" }
+        val epAddr = payload.optInt("endpoint_address", -1)
+        if (epAddr < 0) return jsonError(Response.Status.BAD_REQUEST, "endpoint_address_required")
+
+        // Find interface/endpoint.
+        var chosenIntf: android.hardware.usb.UsbInterface? = null
+        var chosenEp: android.hardware.usb.UsbEndpoint? = null
+        loop@ for (i in 0 until dev.interfaceCount) {
+            val intf = dev.getInterface(i)
+            for (e in 0 until intf.endpointCount) {
+                val ep = intf.getEndpoint(e)
+                if (ep.address == epAddr) {
+                    chosenIntf = intf
+                    chosenEp = ep
+                    break@loop
+                }
+            }
+        }
+        val intf = chosenIntf ?: return jsonError(Response.Status.NOT_FOUND, "interface_not_found_for_endpoint")
+        val ep = chosenEp ?: return jsonError(Response.Status.NOT_FOUND, "endpoint_not_found")
+
+        // Basic validation.
+        val isIn = (epAddr and 0x80) != 0
+        if (!isIn) return jsonError(Response.Status.BAD_REQUEST, "endpoint_must_be_in")
+        if (mode == "bulk_in" && ep.type != UsbConstants.USB_ENDPOINT_XFER_BULK) {
+            return jsonError(Response.Status.BAD_REQUEST, "endpoint_not_bulk")
+        }
+        if (mode == "iso_in" && ep.type != UsbConstants.USB_ENDPOINT_XFER_ISOC) {
+            return jsonError(Response.Status.BAD_REQUEST, "endpoint_not_isochronous")
+        }
+
+        // Claim + set interface (lets caller pick an alternate setting by passing interface_id+alt_setting).
+        // Note: UsbInterface in Android includes alternateSetting; the endpoint match above already selects it.
+        val force = payload.optBoolean("force", true)
+        val claimed = conn.claimInterface(intf, force)
+        if (!claimed) return jsonError(Response.Status.INTERNAL_ERROR, "claim_interface_failed")
+        runCatching { conn.setInterface(intf) }
+
+        val id = java.util.UUID.randomUUID().toString()
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val clients = CopyOnWriteArrayList<UsbStreamClient>()
+        val wsClients = CopyOnWriteArrayList<NanoWSD.WebSocket>()
+
+        val serverSocket = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
+        serverSocket.soTimeout = 600
+        val port = serverSocket.localPort
+
+        val acceptThread = Thread {
+            while (!stop.get()) {
+                try {
+                    val s = serverSocket.accept()
+                    s.tcpNoDelay = true
+                    s.soTimeout = 0
+                    val out = java.io.BufferedOutputStream(s.getOutputStream(), 64 * 1024)
+                    clients.add(UsbStreamClient(s, out))
+                } catch (_: java.net.SocketTimeoutException) {
+                    // loop
+                } catch (_: Exception) {
+                    if (!stop.get()) {
+                        // Something went wrong; stop accepting.
+                        stop.set(true)
+                    }
+                }
+            }
+        }.also { it.name = "usb-stream-accept-$id" }
+
+        val ioThread = Thread {
+            val timeout = payload.optInt("timeout_ms", 200).coerceIn(1, 60000)
+            val chunkSize = payload.optInt("chunk_size", 16 * 1024).coerceIn(1, 1024 * 1024)
+            val intervalMs = payload.optInt("interval_ms", 0).coerceIn(0, 2000)
+
+            val fd = conn.fileDescriptor
+            val isoPacketSize = payload.optInt("packet_size", 1024).coerceIn(1, 1024 * 1024)
+            val isoNumPackets = payload.optInt("num_packets", 32).coerceIn(1, 1024)
+
+            UsbIsoBridge.ensureLoaded()
+
+            val buf = ByteArray(chunkSize)
+            while (!stop.get()) {
+                try {
+                    if (mode == "bulk_in") {
+                        val n = conn.bulkTransfer(ep, buf, buf.size, timeout)
+                        if (n > 0) {
+                            broadcastUsbStream(
+                                usbStreams[id] ?: break,
+                                1,
+                                buf.copyOfRange(0, n.coerceIn(0, buf.size))
+                            )
+                        }
+                    } else if (mode == "iso_in") {
+                        if (fd < 0) break
+                        val blob = UsbIsoBridge.isochIn(fd, epAddr, isoPacketSize, isoNumPackets, timeout) ?: break
+                        // Send the raw KISO blob; clients can parse status/length fields if they need them.
+                        broadcastUsbStream(usbStreams[id] ?: break, 2, blob)
+                    } else {
+                        break
+                    }
+                    if (intervalMs > 0) {
+                        Thread.sleep(intervalMs.toLong())
+                    }
+                } catch (_: Exception) {
+                    // If transfers start failing, stop the stream.
+                    stop.set(true)
+                }
+            }
+        }.also { it.name = "usb-stream-io-$id" }
+
+        val state = UsbStreamState(
+            id = id,
+            mode = mode,
+            handle = handle,
+            endpointAddress = epAddr,
+            interfaceId = intf.id,
+            altSetting = intf.alternateSetting,
+            tcpPort = port,
+            serverSocket = serverSocket,
+            stop = stop,
+            clients = clients,
+            wsClients = wsClients,
+            acceptThread = acceptThread,
+            ioThread = ioThread
+        )
+        usbStreams[id] = state
+
+        acceptThread.start()
+        ioThread.start()
+
+        return jsonResponse(
+            JSONObject()
+                .put("status", "ok")
+                .put("stream_id", id)
+                .put("mode", mode)
+                .put("handle", handle)
+                .put("endpoint_address", epAddr)
+                .put("interface_id", intf.id)
+                .put("alt_setting", intf.alternateSetting)
+                .put("tcp_host", "127.0.0.1")
+                .put("tcp_port", port)
+                .put("ws_path", "/ws/usb/stream/$id")
+        )
+    }
+
+    private fun handleUsbStreamStop(payload: JSONObject): Response {
+        val id = payload.optString("stream_id", "").trim()
+        if (id.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "stream_id_required")
+        val st = usbStreams.remove(id) ?: return jsonError(Response.Status.NOT_FOUND, "stream_not_found")
+        st.stop.set(true)
+        runCatching { st.serverSocket.close() }
+        runCatching { st.acceptThread.join(800) }
+        runCatching { st.ioThread.join(800) }
+        for (c in st.clients) {
+            runCatching { c.socket.close() }
+        }
+        st.clients.clear()
+        st.wsClients.clear()
+        return jsonResponse(JSONObject().put("status", "ok").put("stopped", true))
+    }
+
+    private fun handleUsbStreamStatus(): Response {
+        val arr = org.json.JSONArray()
+        usbStreams.values.sortedBy { it.id }.forEach { st ->
+            arr.put(
+                JSONObject()
+                    .put("stream_id", st.id)
+                    .put("mode", st.mode)
+                    .put("handle", st.handle)
+                    .put("endpoint_address", st.endpointAddress)
+                    .put("interface_id", st.interfaceId)
+                    .put("alt_setting", st.altSetting)
+                    .put("tcp_host", "127.0.0.1")
+                    .put("tcp_port", st.tcpPort)
+                    .put("ws_path", "/ws/usb/stream/${st.id}")
+                    .put("clients_tcp", st.clients.size)
+                    .put("clients_ws", st.wsClients.size)
+            )
+        }
+        return jsonResponse(JSONObject().put("status", "ok").put("items", arr))
+    }
+
+    override fun openWebSocket(handshake: IHTTPSession): NanoWSD.WebSocket {
+        val uri = handshake.uri ?: "/"
+        val prefix = "/ws/usb/stream/"
+        if (!uri.startsWith(prefix)) {
+            return object : NanoWSD.WebSocket(handshake) {
+                override fun onOpen() {
+                    runCatching { close(NanoWSD.WebSocketFrame.CloseCode.PolicyViolation, "unknown_ws_path", false) }
+                }
+                override fun onClose(code: NanoWSD.WebSocketFrame.CloseCode?, reason: String?, initiatedByRemote: Boolean) {}
+                override fun onMessage(message: NanoWSD.WebSocketFrame?) {}
+                override fun onPong(pong: NanoWSD.WebSocketFrame?) {}
+                override fun onException(exception: java.io.IOException?) {}
+            }
+        }
+
+        val streamId = uri.removePrefix(prefix).trim()
+        return object : NanoWSD.WebSocket(handshake) {
+            override fun onOpen() {
+                val st = usbStreams[streamId]
+                if (st == null) {
+                    runCatching { close(NanoWSD.WebSocketFrame.CloseCode.PolicyViolation, "stream_not_found", false) }
+                    return
+                }
+                st.wsClients.add(this)
+            }
+
+            override fun onClose(code: NanoWSD.WebSocketFrame.CloseCode?, reason: String?, initiatedByRemote: Boolean) {
+                usbStreams[streamId]?.wsClients?.remove(this)
+            }
+
+            override fun onMessage(message: NanoWSD.WebSocketFrame?) {
+                // Ignore; this is a server->client stream.
+            }
+
+            override fun onPong(pong: NanoWSD.WebSocketFrame?) {}
+
+            override fun onException(exception: java.io.IOException?) {
+                usbStreams[streamId]?.wsClients?.remove(this)
+            }
+        }
     }
 
     private fun findUsbDevice(name: String, vendorId: Int, productId: Int): UsbDevice? {

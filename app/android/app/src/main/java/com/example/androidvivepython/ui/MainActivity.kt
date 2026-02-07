@@ -7,9 +7,12 @@ import android.content.IntentFilter
 import android.os.Bundle
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.widget.FrameLayout
 import android.widget.Toast
+import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
+import android.webkit.ValueCallback
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,6 +36,32 @@ class MainActivity : AppCompatActivity() {
             val cb = pendingAndroidPermAction.getAndSet(null)
             pendingAndroidPermRequestId.set(null)
             cb?.invoke(ok)
+        }
+
+    private val pendingWebViewPermAction = AtomicReference<((Boolean) -> Unit)?>(null)
+    private val webViewPermLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+            val ok = results.values.all { it }
+            val cb = pendingWebViewPermAction.getAndSet(null)
+            cb?.invoke(ok)
+        }
+
+    private var pendingFilePathCallback: ValueCallback<Array<Uri>>? = null
+    private var pendingFileChooserMimeTypes: Array<String> = arrayOf("*/*")
+    private var pendingFileChooserMultiple: Boolean = false
+    private val openDocumentLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            val cb = pendingFilePathCallback
+            pendingFilePathCallback = null
+            if (cb == null) return@registerForActivityResult
+            if (uri == null) cb.onReceiveValue(null) else cb.onReceiveValue(arrayOf(uri))
+        }
+    private val openMultipleDocumentsLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            val cb = pendingFilePathCallback
+            pendingFilePathCallback = null
+            if (cb == null) return@registerForActivityResult
+            if (uris.isNullOrEmpty()) cb.onReceiveValue(null) else cb.onReceiveValue(uris.toTypedArray())
         }
     private val pythonHealthReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -80,6 +109,69 @@ class MainActivity : AppCompatActivity() {
                     "console: ${message.message()} @${message.lineNumber()} ${message.sourceId()}"
                 )
                 return true
+            }
+
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                if (filePathCallback == null) return false
+                // Cancel any previous pending chooser.
+                pendingFilePathCallback?.onReceiveValue(null)
+                pendingFilePathCallback = filePathCallback
+
+                val accept = fileChooserParams?.acceptTypes
+                    ?.map { it.trim() }
+                    ?.filter { it.isNotBlank() }
+                    ?.toTypedArray()
+                    ?: emptyArray()
+                pendingFileChooserMimeTypes = if (accept.isNotEmpty()) accept else arrayOf("*/*")
+                pendingFileChooserMultiple = fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+
+                return try {
+                    if (pendingFileChooserMultiple) {
+                        openMultipleDocumentsLauncher.launch(pendingFileChooserMimeTypes)
+                    } else {
+                        openDocumentLauncher.launch(pendingFileChooserMimeTypes)
+                    }
+                    true
+                } catch (_: Exception) {
+                    pendingFilePathCallback?.onReceiveValue(null)
+                    pendingFilePathCallback = null
+                    false
+                }
+            }
+
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                val req = request ?: return
+                val wanted = req.resources?.toList() ?: emptyList()
+                val perms = ArrayList<String>()
+                if (wanted.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) perms.add(Manifest.permission.CAMERA)
+                if (wanted.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) perms.add(Manifest.permission.RECORD_AUDIO)
+                if (perms.isEmpty()) {
+                    // e.g. protected media id, midi, etc. Fail closed.
+                    req.deny()
+                    return
+                }
+
+                val missing = perms.filter { p ->
+                    ActivityCompat.checkSelfPermission(this@MainActivity, p) != PackageManager.PERMISSION_GRANTED
+                }
+                if (missing.isEmpty()) {
+                    req.grant(req.resources)
+                    return
+                }
+
+                // Avoid overlapping permission requests.
+                if (pendingWebViewPermAction.get() != null) {
+                    req.deny()
+                    return
+                }
+                pendingWebViewPermAction.set { ok ->
+                    if (ok) req.grant(req.resources) else req.deny()
+                }
+                webViewPermLauncher.launch(missing.toTypedArray())
             }
         }
         webView.webViewClient = object : WebViewClient() {
@@ -150,6 +242,12 @@ class MainActivity : AppCompatActivity() {
         unregisterReceiver(pythonHealthReceiver)
         unregisterReceiver(permissionPromptReceiver)
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        pendingFilePathCallback?.onReceiveValue(null)
+        pendingFilePathCallback = null
+        super.onDestroy()
     }
 
     private fun publishStatusToWeb(status: String) {

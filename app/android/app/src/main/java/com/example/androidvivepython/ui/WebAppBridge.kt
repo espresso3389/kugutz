@@ -5,11 +5,15 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.webkit.JavascriptInterface
+import androidx.core.content.FileProvider
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
+import android.widget.Toast
 import jp.espresso3389.kugutz.perm.CredentialStore
 import jp.espresso3389.kugutz.service.AgentService
+import java.io.File
+import java.net.URLConnection
 
 class WebAppBridge(private val activity: MainActivity) {
     private val handler = Handler(Looper.getMainLooper())
@@ -54,6 +58,45 @@ class WebAppBridge(private val activity: MainActivity) {
             val extractor = jp.espresso3389.kugutz.service.AssetExtractor(activity)
             extractor.resetUiAssets()
             activity.reloadUi()
+        }
+    }
+
+    @JavascriptInterface
+    fun resetUserDefaultsToDefaults() {
+        handler.post {
+            val extractor = jp.espresso3389.kugutz.service.AssetExtractor(activity)
+            val ok = extractor.resetUserDefaults() != null
+            Toast.makeText(
+                activity,
+                if (ok) "Agent docs reset applied" else "Agent docs reset failed",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    @JavascriptInterface
+    fun shareUserFile(relPath: String, mime: String?) {
+        handler.post {
+            val p = relPath.trim().trimStart('/')
+            if (p.isBlank() || p.contains("..")) return@post
+            val root = File(activity.filesDir, "user").canonicalFile
+            val file = File(root, p).canonicalFile
+            if (!file.path.startsWith(root.path + File.separator) || !file.exists() || !file.isFile) return@post
+
+            val authority = activity.packageName + ".fileprovider"
+            val uri = runCatching { FileProvider.getUriForFile(activity, authority, file) }.getOrNull()
+                ?: return@post
+            val guessed = mime?.trim().orEmpty().ifBlank {
+                URLConnection.guessContentTypeFromName(file.name) ?: "application/octet-stream"
+            }
+
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = guessed
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val chooser = Intent.createChooser(intent, "Share")
+            activity.startActivity(chooser)
         }
     }
 

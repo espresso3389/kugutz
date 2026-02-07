@@ -147,15 +147,24 @@ class AssetExtractor(private val context: Context) {
             // Only seed defaults if missing, so we never overwrite user edits.
             val agentFile = File(targetDir, "AGENTS.md")
             val toolsFile = File(targetDir, "TOOLS.md")
-            if (agentFile.exists() && toolsFile.exists()) {
-                return targetDir
-            }
-
             if (!agentFile.exists() && assetExists("user_defaults/AGENTS.md")) {
                 copyAssetFile("user_defaults/AGENTS.md", agentFile)
             }
             if (!toolsFile.exists() && assetExists("user_defaults/TOOLS.md")) {
                 copyAssetFile("user_defaults/TOOLS.md", toolsFile)
+            }
+
+            // Seed docs/examples directories (missing-only). These are safe to copy even when the
+            // top-level markdown files already exist, because we never overwrite existing files.
+            val docsDir = File(targetDir, "docs")
+            if (assetDirExists("user_defaults/docs")) {
+                docsDir.mkdirs()
+                copyAssetDirMissingOnly("user_defaults/docs", docsDir)
+            }
+            val examplesDir = File(targetDir, "examples")
+            if (assetDirExists("user_defaults/examples")) {
+                examplesDir.mkdirs()
+                copyAssetDirMissingOnly("user_defaults/examples", examplesDir)
             }
             targetDir
         } catch (ex: Exception) {
@@ -205,6 +214,40 @@ class AssetExtractor(private val context: Context) {
         }
     }
 
+    fun resetUserDefaults(): File? {
+        return try {
+            val targetDir = File(context.filesDir, "user")
+            targetDir.mkdirs()
+
+            // Overwrite shipped defaults (explicit user action).
+            val agentFile = File(targetDir, "AGENTS.md")
+            val toolsFile = File(targetDir, "TOOLS.md")
+            if (assetExists("user_defaults/AGENTS.md")) {
+                copyAssetFile("user_defaults/AGENTS.md", agentFile)
+            }
+            if (assetExists("user_defaults/TOOLS.md")) {
+                copyAssetFile("user_defaults/TOOLS.md", toolsFile)
+            }
+
+            // Overwrite docs/examples shipped by the app. Keep any extra user-created files.
+            val docsDir = File(targetDir, "docs")
+            if (assetDirExists("user_defaults/docs")) {
+                docsDir.mkdirs()
+                copyAssetDirOverwrite("user_defaults/docs", docsDir)
+            }
+            val examplesDir = File(targetDir, "examples")
+            if (assetDirExists("user_defaults/examples")) {
+                examplesDir.mkdirs()
+                copyAssetDirOverwrite("user_defaults/examples", examplesDir)
+            }
+
+            targetDir
+        } catch (ex: Exception) {
+            Log.e(TAG, "Failed to reset user defaults", ex)
+            null
+        }
+    }
+
     private fun copyAssetDir(assetPath: String, outDir: File) {
         val assetManager = context.assets
         val entries = assetManager.list(assetPath) ?: return
@@ -226,6 +269,53 @@ class AssetExtractor(private val context: Context) {
         }
     }
 
+    private fun copyAssetDirOverwrite(assetPath: String, outDir: File) {
+        val assetManager = context.assets
+        val entries = assetManager.list(assetPath) ?: return
+        if (entries.isEmpty()) {
+            val outFile = File(outDir, assetPath.substringAfterLast("/"))
+            copyAssetFile(assetPath, outFile)
+            return
+        }
+        for (entry in entries) {
+            val childAssetPath = "$assetPath/$entry"
+            val childEntries = assetManager.list(childAssetPath)
+            if (childEntries == null || childEntries.isEmpty()) {
+                copyAssetFile(childAssetPath, File(outDir, entry))
+            } else {
+                val childOut = File(outDir, entry)
+                childOut.mkdirs()
+                copyAssetDirOverwrite(childAssetPath, childOut)
+            }
+        }
+    }
+
+    private fun copyAssetDirMissingOnly(assetPath: String, outDir: File) {
+        val assetManager = context.assets
+        val entries = assetManager.list(assetPath) ?: return
+        if (entries.isEmpty()) {
+            val outFile = File(outDir, assetPath.substringAfterLast("/"))
+            if (!outFile.exists()) {
+                copyAssetFile(assetPath, outFile)
+            }
+            return
+        }
+        for (entry in entries) {
+            val childAssetPath = "$assetPath/$entry"
+            val childEntries = assetManager.list(childAssetPath)
+            if (childEntries == null || childEntries.isEmpty()) {
+                val outFile = File(outDir, entry)
+                if (!outFile.exists()) {
+                    copyAssetFile(childAssetPath, outFile)
+                }
+            } else {
+                val childOut = File(outDir, entry)
+                childOut.mkdirs()
+                copyAssetDirMissingOnly(childAssetPath, childOut)
+            }
+        }
+    }
+
     private fun copyAssetFile(assetPath: String, outFile: File) {
         outFile.parentFile?.mkdirs()
         context.assets.open(assetPath).use { input ->
@@ -239,6 +329,15 @@ class AssetExtractor(private val context: Context) {
         return try {
             context.assets.open(assetPath).close()
             true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun assetDirExists(assetPath: String): Boolean {
+        return try {
+            val entries = context.assets.list(assetPath)
+            entries != null
         } catch (_: Exception) {
             false
         }

@@ -1,13 +1,20 @@
 package jp.espresso3389.kugutz.device
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CameraManager
+import android.media.ImageReader
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
+import android.util.Log
 import android.util.Size
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -23,17 +30,24 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class CameraXManager(
     private val context: Context,
     private val lifecycleOwner: LifecycleOwner,
 ) {
+    companion object {
+        private const val TAG = "CameraXManager"
+    }
     private val main = Handler(Looper.getMainLooper())
     private val wsClients = CopyOnWriteArrayList<NanoWSD.WebSocket>()
     private val started = AtomicBoolean(false)
@@ -128,39 +142,355 @@ class CameraXManager(
         return mapOf("status" to "ok", "stopped" to true)
     }
 
-    fun captureStill(outFile: File, lens: String = "back"): Map<String, Any> {
-        val facing = if (lens.trim().lowercase() == "front") CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
-        val providerFuture = ProcessCameraProvider.getInstance(context)
-        val executor = ContextCompat.getMainExecutor(context)
+    fun captureStill(
+        outFile: File,
+        lens: String = "back",
+        timeoutMs: Long = 12_000,
+        jpegQuality: Int = 95,
+        exposureCompensation: Int? = null,
+    ): Map<String, Any> {
+        // CameraX ImageCapture can be flaky on some devices when invoked from a foreground service.
+        // Use Camera2 for still capture to maximize compatibility.
+        return captureStillCamera2(
+            outFile,
+            lens = lens,
+            timeoutMs = timeoutMs,
+            jpegQuality = jpegQuality,
+            exposureCompensation = exposureCompensation,
+        )
+    }
 
-        providerFuture.addListener({
-            val provider = providerFuture.get()
-            cameraProvider = provider
-            bindCaptureOnly(provider, facing)
+    @SuppressLint("MissingPermission")
+    private fun captureStillCamera2(
+        outFile: File,
+        lens: String,
+        timeoutMs: Long,
+        jpegQuality: Int,
+        exposureCompensation: Int?,
+    ): Map<String, Any> {
+        val stage = AtomicReference("init")
+        fun setStage(s: String) {
+            stage.set(s)
+            Log.i(TAG, "camera2.capture stage=$s lens=$lens out=${outFile.absolutePath}")
+        }
 
-            val cap = capture
-            if (cap == null) {
-                emitError("capture_not_ready")
-                return@addListener
-            }
-            outFile.parentFile?.mkdirs()
-            val opts = ImageCapture.OutputFileOptions.Builder(outFile).build()
-            cap.takePicture(
-                opts,
-                executor,
-                object : ImageCapture.OnImageSavedCallback {
-                    override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                        emit("capture_saved", JSONObject().put("path", outFile.absolutePath))
-                    }
+        val mgr = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+            ?: return mapOf("status" to "error", "error" to "camera_manager_unavailable", "stage" to "camera_manager_unavailable")
 
-                    override fun onError(exception: ImageCaptureException) {
-                        emitError("capture_failed", exception.message ?: "")
-                    }
-                }
+        val wantFront = lens.trim().lowercase() == "front"
+        var chosenId: String? = null
+        var chosenSizes: Array<Size>? = null
+        var chosenChars: CameraCharacteristics? = null
+        for (id in mgr.cameraIdList) {
+            val ch = runCatching { mgr.getCameraCharacteristics(id) }.getOrNull() ?: continue
+            val facing = ch.get(CameraCharacteristics.LENS_FACING)
+            val isFront = facing == CameraCharacteristics.LENS_FACING_FRONT
+            val isBack = facing == CameraCharacteristics.LENS_FACING_BACK
+            if (wantFront && !isFront) continue
+            if (!wantFront && !isBack) continue
+
+            val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            val sizes = map?.getOutputSizes(ImageFormat.JPEG)
+            if (sizes == null || sizes.isEmpty()) continue
+            chosenId = id
+            chosenSizes = sizes
+            chosenChars = ch
+            break
+        }
+        val cameraId = chosenId ?: return mapOf("status" to "error", "error" to "no_camera_found")
+        val jpegSizes = chosenSizes ?: return mapOf("status" to "error", "error" to "no_jpeg_sizes")
+        val chars = chosenChars
+
+        // Choose a reasonable size: prefer <= 1920px wide, else use the first.
+        val sorted = jpegSizes.sortedWith(compareBy({ it.width * it.height }))
+        val pref = sorted.lastOrNull { it.width <= 1920 } ?: sorted.lastOrNull() ?: sorted.first()
+        setStage("selected_camera_${cameraId}_${pref.width}x${pref.height}")
+
+        outFile.parentFile?.mkdirs()
+
+        val thread = HandlerThread("camera2-capture").apply { start() }
+        val handler = Handler(thread.looper)
+        val latch = CountDownLatch(1)
+        val lastDetail = AtomicReference("")
+        val result = AtomicReference<Map<String, Any>>(
+            mapOf(
+                "status" to "error",
+                "error" to "capture_timeout",
+                "path" to outFile.absolutePath,
+                "stage" to "timeout"
             )
-        }, executor)
+        )
 
-        return mapOf("status" to "ok", "path" to outFile.absolutePath)
+        val reader = ImageReader.newInstance(pref.width, pref.height, ImageFormat.JPEG, 1)
+        reader.setOnImageAvailableListener({ r ->
+            try {
+                setStage("image_available")
+                val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+                try {
+                    val buf = image.planes[0].buffer
+                    val bytes = ByteArray(buf.remaining())
+                    buf.get(bytes)
+                    FileOutputStream(outFile).use { it.write(bytes) }
+                } finally {
+                    runCatching { image.close() }
+                }
+                result.set(mapOf("status" to "ok", "path" to outFile.absolutePath, "method" to "camera2", "stage" to stage.get()))
+                emit("capture_saved", JSONObject().put("path", outFile.absolutePath).put("method", "camera2"))
+            } catch (ex: Exception) {
+                val msg = ex.message ?: ""
+                lastDetail.set(msg)
+                result.set(
+                    mapOf(
+                        "status" to "error",
+                        "error" to "capture_failed",
+                        "detail" to msg,
+                        "path" to outFile.absolutePath,
+                        "method" to "camera2",
+                        "stage" to stage.get()
+                    )
+                )
+                emitError("capture_failed", ex.message ?: "")
+            } finally {
+                latch.countDown()
+            }
+        }, handler)
+
+        var device: CameraDevice? = null
+        var session: CameraCaptureSession? = null
+
+        val cb = object : CameraDevice.StateCallback() {
+            override fun onOpened(camera: CameraDevice) {
+                setStage("device_opened")
+                device = camera
+                try {
+                    setStage("create_session")
+                    camera.createCaptureSession(
+                        Collections.singletonList(reader.surface),
+                        object : CameraCaptureSession.StateCallback() {
+                            override fun onConfigured(s: CameraCaptureSession) {
+                                setStage("session_configured")
+                                session = s
+                                try {
+                                    setStage("submit_still_request")
+                                    val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                                        addTarget(reader.surface)
+                                        set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                                        set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                                        set(CaptureRequest.JPEG_QUALITY, jpegQuality.coerceIn(40, 100).toByte())
+                                        // Exposure compensation (AE) in device-specific steps.
+                                        if (exposureCompensation != null) {
+                                            val range = chars?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+                                            if (range != null) {
+                                                set(
+                                                    CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                                                    exposureCompensation.coerceIn(range.lower, range.upper)
+                                                )
+                                            }
+                                        }
+                                    }.build()
+                                    s.capture(req, object : CameraCaptureSession.CaptureCallback() {}, handler)
+                                    setStage("capture_submitted")
+                                } catch (ex: Exception) {
+                                    val msg = ex.message ?: ""
+                                    lastDetail.set(msg)
+                                    result.set(
+                                        mapOf(
+                                            "status" to "error",
+                                            "error" to "capture_failed",
+                                            "detail" to msg,
+                                            "path" to outFile.absolutePath,
+                                            "method" to "camera2",
+                                            "stage" to stage.get()
+                                        )
+                                    )
+                                    emitError("capture_failed", ex.message ?: "")
+                                    latch.countDown()
+                                }
+                            }
+
+                            override fun onConfigureFailed(s: CameraCaptureSession) {
+                                lastDetail.set("configure_failed")
+                                result.set(
+                                    mapOf(
+                                        "status" to "error",
+                                        "error" to "capture_failed",
+                                        "detail" to "configure_failed",
+                                        "path" to outFile.absolutePath,
+                                        "method" to "camera2",
+                                        "stage" to stage.get()
+                                    )
+                                )
+                                emitError("capture_failed", "configure_failed")
+                                latch.countDown()
+                            }
+                        },
+                        handler
+                    )
+                } catch (ex: Exception) {
+                    val msg = ex.message ?: ""
+                    lastDetail.set(msg)
+                    result.set(
+                        mapOf(
+                            "status" to "error",
+                            "error" to "capture_failed",
+                            "detail" to msg,
+                            "path" to outFile.absolutePath,
+                            "method" to "camera2",
+                            "stage" to stage.get()
+                        )
+                    )
+                    emitError("capture_failed", ex.message ?: "")
+                    latch.countDown()
+                }
+            }
+
+            override fun onDisconnected(camera: CameraDevice) {
+                setStage("device_disconnected")
+                runCatching { camera.close() }
+                latch.countDown()
+            }
+
+            override fun onError(camera: CameraDevice, error: Int) {
+                setStage("device_error_$error")
+                runCatching { camera.close() }
+                lastDetail.set("camera_error_$error")
+                result.set(
+                    mapOf(
+                        "status" to "error",
+                        "error" to "capture_failed",
+                        "detail" to "camera_error_$error",
+                        "path" to outFile.absolutePath,
+                        "method" to "camera2",
+                        "stage" to stage.get()
+                    )
+                )
+                emitError("capture_failed", "camera_error_$error")
+                latch.countDown()
+            }
+        }
+
+        try {
+            setStage("open_camera_call")
+            mgr.openCamera(cameraId, cb, handler)
+        } catch (ex: Exception) {
+            val msg = ex.message ?: ""
+            lastDetail.set(msg)
+            reader.close()
+            thread.quitSafely()
+            return mapOf(
+                "status" to "error",
+                "error" to "capture_failed",
+                "detail" to msg,
+                "path" to outFile.absolutePath,
+                "method" to "camera2",
+                "stage" to stage.get()
+            )
+        }
+
+        val ok = latch.await(timeoutMs.coerceIn(2_000, 60_000), TimeUnit.MILLISECONDS)
+        if (!ok) {
+            setStage("timeout")
+            emitError("capture_timeout")
+            val detail = lastDetail.get()
+            result.set(
+                mapOf(
+                    "status" to "error",
+                    "error" to "capture_timeout",
+                    "detail" to detail,
+                    "path" to outFile.absolutePath,
+                    "method" to "camera2",
+                    "stage" to stage.get()
+                )
+            )
+        }
+        runCatching { session?.close() }
+        runCatching { device?.close() }
+        runCatching { reader.close() }
+        runCatching { thread.quitSafely() }
+        return result.get()
+    }
+
+    private fun captureSingleFrameJpeg(
+        provider: ProcessCameraProvider,
+        facing: Int,
+        outFile: File,
+        jpegQuality: Int,
+        latch: CountDownLatch,
+        finished: AtomicBoolean,
+        finishOnce: (Map<String, Any>) -> Unit,
+    ) {
+        val selector = CameraSelector.Builder().requireLensFacing(facing).build()
+        val ana = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setTargetResolution(previewSize)
+            .build()
+
+        // Use a one-shot executor to avoid any stalls from the shared analysis thread.
+        val exec: ExecutorService = Executors.newSingleThreadExecutor()
+        ana.setAnalyzer(exec) { img ->
+            try {
+                if (finished.get()) return@setAnalyzer
+                val jpeg = yuv420ToJpeg(img, jpegQuality.coerceIn(10, 95))
+                outFile.parentFile?.mkdirs()
+                FileOutputStream(outFile).use { it.write(jpeg) }
+                emit("capture_saved", JSONObject().put("path", outFile.absolutePath).put("method", "analysis_fallback"))
+                finishOnce(
+                    mapOf(
+                        "status" to "ok",
+                        "path" to outFile.absolutePath,
+                        "method" to "analysis_fallback"
+                    )
+                )
+            } catch (ex: Exception) {
+                emitError("capture_failed", ex.message ?: "")
+                finishOnce(
+                    mapOf(
+                        "status" to "error",
+                        "error" to "capture_failed",
+                        "detail" to (ex.message ?: ""),
+                        "path" to outFile.absolutePath,
+                        "method" to "analysis_fallback"
+                    )
+                )
+            } finally {
+                img.close()
+                runCatching { ana.clearAnalyzer() }
+                exec.shutdown()
+                // CameraX requires bind/unbind on the main thread.
+                main.post {
+                    runCatching { provider.unbindAll() }
+                    analysis = null
+                    capture = null
+                    camera = null
+                }
+            }
+        }
+
+        // CameraX requires bind/unbind on the main thread.
+        main.post {
+            runCatching {
+                provider.unbindAll()
+                analysis = ana
+                // Some devices won't deliver ImageAnalysis frames reliably unless another use case
+                // (e.g., ImageCapture) is also bound.
+                val cap = ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .build()
+                capture = cap
+                camera = provider.bindToLifecycle(lifecycleOwner, selector, cap, ana)
+            }.onFailure { ex ->
+                emitError("capture_failed", ex.message ?: "")
+                finishOnce(
+                    mapOf(
+                        "status" to "error",
+                        "error" to "capture_failed",
+                        "detail" to (ex.message ?: ""),
+                        "path" to outFile.absolutePath,
+                        "method" to "analysis_fallback"
+                    )
+                )
+            }
+        }
     }
 
     private fun bindCaptureOnly(provider: ProcessCameraProvider, facing: Int) {
@@ -299,4 +629,3 @@ class CameraXManager(
         emit("error", JSONObject().put("code", code).put("detail", detail))
     }
 }
-

@@ -213,6 +213,94 @@
         color: var(--ink-secondary);
       }
 
+      /* Inline attachments in chat */
+      .attach-wrap { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+      .attach-card {
+        background: #0d0d0f;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: 10px;
+      }
+      .attach-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+      .attach-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+      .attach-path {
+        font-family: "JetBrains Mono", "Fira Code", "Menlo", "Consolas", monospace;
+        font-size: 12px;
+        color: var(--ink-secondary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .attach-icon-btn {
+        width: 34px;
+        height: 34px;
+        border-radius: var(--radius-md);
+        border: 1px solid rgba(161,161,170,0.25);
+        background: rgba(255,255,255,0.04);
+        color: var(--ink-secondary);
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        font-size: 16px;
+      }
+      .attach-icon-btn:hover { background: rgba(255,255,255,0.08); color: var(--ink); }
+
+      /* Fullscreen viewer */
+      .viewer {
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.92);
+        display: none;
+        z-index: 1200;
+        touch-action: none;
+      }
+      .viewer.show { display: flex; flex-direction: column; }
+      .viewer-top {
+        height: 54px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 12px;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+      }
+      .viewer-top .viewer-title {
+        font-size: 13px;
+        color: rgba(255,255,255,0.78);
+        font-family: "JetBrains Mono", "Fira Code", "Menlo", "Consolas", monospace;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 60vw;
+      }
+      .viewer-body {
+        flex: 1;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        position: relative;
+      }
+      .viewer-img {
+        max-width: 100%;
+        max-height: 100%;
+        transform-origin: 0 0;
+        will-change: transform;
+      }
+      .attach-body img,
+      .attach-body video {
+        width: 100%;
+        max-height: 360px;
+        object-fit: contain;
+        background: #000;
+        border-radius: var(--radius-sm);
+      }
+      .attach-body audio { width: 100%; }
+      .attach-hint { color: var(--ink-muted); font-size: 12px; margin-top: 6px; }
+
       /* Thinking indicator */
       .thinking-dots { display: inline-flex; gap: 4px; align-items: center; padding: 4px 0; }
       .thinking-dots span {
@@ -231,24 +319,41 @@
       /* Chat input */
       .chat-input-area {
         display: flex;
-        align-items: flex-end;
-        gap: 8px;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
         padding: 10px 12px 14px;
         border-top: 1px solid var(--border);
         background: var(--bg-raised);
         flex-shrink: 0;
       }
-      .chat-mode-badge {
+      .chat-input-row {
+        display: flex;
+        align-items: flex-end;
+        gap: 8px;
+      }
+      .chat-left {
+        display: flex;
+        gap: 8px;
+        align-items: center;
         flex-shrink: 0;
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--accent);
-        background: var(--accent-soft);
-        padding: 6px 10px;
-        border-radius: var(--radius-full);
-        letter-spacing: 0.3px;
-        text-transform: uppercase;
-        align-self: center;
+        padding-bottom: 4px;
+      }
+      .chat-left .icon-btn {
+        width: 40px;
+        height: 40px;
+        border-radius: var(--radius-md);
+        font-size: 18px;
+      }
+      .chat-left .icon-btn.primary {
+        background: rgba(99,102,241,0.14);
+        border-color: rgba(99,102,241,0.35);
+        color: #c7d2fe;
+      }
+      .chat-left .icon-btn.danger {
+        background: rgba(239,68,68,0.12);
+        border-color: rgba(239,68,68,0.35);
+        color: #fecaca;
       }
       .chat-input-area textarea {
         flex: 1;
@@ -286,6 +391,52 @@
       .send-btn:hover { background: var(--accent-hover); }
       .send-btn:active { transform: scale(0.95); }
       .send-btn:disabled { opacity: 0.35; cursor: default; }
+
+      .composer-attachments {
+        display: none;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .composer-attachments.show { display: flex; }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 9999px;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(161,161,170,0.25);
+        max-width: 100%;
+      }
+      .chip .chip-name {
+        font-size: 13px;
+        color: var(--ink);
+        font-weight: 600;
+        max-width: 62vw;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .chip .chip-sub {
+        font-size: 11px;
+        color: var(--ink-muted);
+        white-space: nowrap;
+      }
+      .chip .chip-x {
+        width: 24px;
+        height: 24px;
+        border-radius: 9999px;
+        border: 1px solid rgba(161,161,170,0.25);
+        background: rgba(0,0,0,0.15);
+        color: var(--ink-secondary);
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        font-size: 13px;
+        flex-shrink: 0;
+      }
+      .chip .chip-x:hover { color: var(--ink); background: rgba(255,255,255,0.08); }
 
       /* --- Settings page --- */
       .settings-scroll {
@@ -391,6 +542,81 @@
       .btn-group { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 
       .muted { color: var(--ink-muted); font-size: 13px; word-break: break-word; overflow-wrap: anywhere; }
+
+      /* Media preview */
+      .media-preview {
+        margin-top: 10px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: #0d0d0f;
+        padding: 10px;
+      }
+      .media-preview img,
+      .media-preview video {
+        width: 100%;
+        border-radius: var(--radius-sm);
+        background: #000;
+        max-height: 360px;
+        object-fit: contain;
+      }
+      .media-preview audio { width: 100%; }
+      .media-preview .hint { color: var(--ink-muted); font-size: 12px; margin-top: 6px; }
+
+      .dropzone {
+        border: 1px dashed rgba(161,161,170,0.45);
+        background: rgba(99,102,241,0.06);
+        border-radius: var(--radius-md);
+        padding: 12px;
+        transition: border-color var(--transition), background var(--transition);
+      }
+      .dropzone.dragover {
+        border-color: rgba(129,140,248,0.9);
+        background: rgba(99,102,241,0.14);
+      }
+      .dropzone .dz-title { font-weight: 700; font-size: 13px; }
+      .dropzone .dz-sub { color: var(--ink-muted); font-size: 12px; margin-top: 4px; }
+
+      .file-list {
+        margin-top: 10px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+        background: rgba(0,0,0,0.18);
+      }
+      .file-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border-top: 1px solid rgba(46,46,54,0.7);
+      }
+      .file-row:first-child { border-top: none; }
+      .file-row:hover { background: rgba(255,255,255,0.04); }
+      .file-name {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .file-meta {
+        color: var(--ink-muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .pill {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        text-transform: uppercase;
+        padding: 3px 8px;
+        border-radius: var(--radius-full);
+        border: 1px solid rgba(161,161,170,0.28);
+        color: var(--ink-secondary);
+        background: rgba(255,255,255,0.04);
+        flex-shrink: 0;
+      }
 
       /* Form fields */
       .field { margin-top: 10px; }
@@ -606,10 +832,17 @@
         </div>
       </div>
       <div class="chat-input-area">
-        <div class="chat-mode-badge">Agent</div>
-        <textarea id="chatInput" placeholder="Message..." rows="1"></textarea>
-        <button class="send-btn" id="chatSend" title="Send">&#9654;</button>
+        <div class="composer-attachments" id="composerAttachments"></div>
+        <div class="chat-input-row">
+          <div class="chat-left">
+            <button class="icon-btn primary" id="chatUploadBtn" title="Attach file(s)" aria-label="Attach file(s)">&#8682;</button>
+            <button class="icon-btn" id="chatRecordBtn" title="Record audio" aria-label="Record audio">&#9679;</button>
+          </div>
+          <textarea id="chatInput" placeholder="Message..." rows="1"></textarea>
+          <button class="send-btn" id="chatSend" title="Send">&#9654;</button>
+        </div>
       </div>
+      <input type="file" id="chatUploadInput" multiple style="display:none" />
     </div>
 
     <!-- ===== Settings Page ===== -->
@@ -782,6 +1015,10 @@
             <span class="muted">Reset the UI files to defaults.</span>
             <button class="btn" id="resetUi">Reset UI</button>
           </div>
+          <div class="row" style="margin-top:10px;">
+            <span class="muted">Reset agent docs (AGENTS/TOOLS/docs) to defaults.</span>
+            <button class="btn" id="resetAgentDocs">Reset Agent Docs</button>
+          </div>
         </section>
 
         <!-- Permissions -->
@@ -804,6 +1041,27 @@
             <button class="btn" id="permClear">Clear saved approvals</button>
           </div>
         </section>
+
+        <!-- Cloud -->
+        <section class="card">
+          <div class="card-header">
+            <div class="card-icon blue">&#9729;</div>
+            <div class="card-title">Cloud</div>
+          </div>
+          <div class="card-desc">
+            Controls extra confirmations for cloud requests that upload local files.
+          </div>
+          <div class="field">
+            <label>Auto-upload without confirm (MB)</label>
+            <input type="number" id="cloudAutoUploadMb" min="0" max="25" step="0.5" placeholder="1.0" />
+            <div class="muted" style="margin-top:4px;">
+              If a cloud request uploads more than this, the UI/agent should confirm before sending.
+            </div>
+          </div>
+          <div class="btn-group">
+            <button class="btn primary" id="cloudPrefsSave">Save</button>
+          </div>
+        </section>
       </div>
     </div>
 
@@ -823,11 +1081,24 @@
     <!-- Toast -->
     <div class="toast" id="toast"></div>
 
+    <!-- Fullscreen Media Viewer (images) -->
+    <div class="viewer" id="viewer" role="dialog" aria-modal="true">
+      <div class="viewer-top">
+        <button class="icon-btn secondary" id="viewerClose" title="Close" aria-label="Close">&#10005;</button>
+        <div class="viewer-title" id="viewerTitle"></div>
+        <button class="icon-btn" id="viewerShare" title="Share" aria-label="Share">&#10150;</button>
+      </div>
+      <div class="viewer-body" id="viewerBody">
+        <img class="viewer-img" id="viewerImg" alt="" />
+      </div>
+    </div>
+
     <script>
       // ==============================
       // Helpers
       // ==============================
-      const API = "http://127.0.0.1:8765";
+      const API = location.origin;
+      const WS_BASE = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
       function $(id) { return document.getElementById(id); }
 
       function showToast(msg, ms) {
@@ -1003,6 +1274,364 @@
       }
 
       // ==============================
+      // Media helpers
+      // ==============================
+      function extOf(name) {
+        const n = String(name || "").trim().toLowerCase();
+        const i = n.lastIndexOf(".");
+        return i >= 0 ? n.slice(i + 1) : "";
+      }
+      function kindFor(name) {
+        const e = extOf(name);
+        if (["png","jpg","jpeg","gif","webp","bmp","svg"].includes(e)) return "image";
+        if (["mp4","webm","mkv","mov","m4v","3gp"].includes(e)) return "video";
+        if (["mp3","wav","ogg","m4a","aac","flac","webm"].includes(e)) return "audio";
+        if (["txt","md","json","log","py","js","html","css"].includes(e)) return "text";
+        return "bin";
+      }
+
+      function mimeForPath(p) {
+        const e = extOf(p);
+        if (["png"].includes(e)) return "image/png";
+        if (["jpg","jpeg"].includes(e)) return "image/jpeg";
+        if (["gif"].includes(e)) return "image/gif";
+        if (["webp"].includes(e)) return "image/webp";
+        if (["svg"].includes(e)) return "image/svg+xml";
+        if (["mp4","m4v"].includes(e)) return "video/mp4";
+        if (["webm"].includes(e)) return "video/webm";
+        if (["mov"].includes(e)) return "video/quicktime";
+        if (["3gp"].includes(e)) return "video/3gpp";
+        if (["mp3"].includes(e)) return "audio/mpeg";
+        if (["wav"].includes(e)) return "audio/wav";
+        if (["ogg"].includes(e)) return "audio/ogg";
+        if (["m4a","aac"].includes(e)) return "audio/aac";
+        if (["flac"].includes(e)) return "audio/flac";
+        if (["json"].includes(e)) return "application/json";
+        if (["txt","md","log","py","js","html","css"].includes(e)) return "text/plain";
+        return "application/octet-stream";
+      }
+
+      function safeRelPath(p) {
+        const s = String(p || "").trim().replace(/^\/+/, "");
+        if (!s) return "";
+        if (s.split("/").some(seg => seg === "..")) return "";
+        return s;
+      }
+
+      function extractRelPathsFromText(text) {
+        const t = String(text || "");
+        const out = [];
+        const seen = new Set();
+
+        // JSON-ish: "rel_path":"captures/foo.jpg"
+        const reJson = /"rel_path"\s*:\s*"([^"]+)"/gi;
+        let m;
+        while ((m = reJson.exec(t)) !== null) {
+          const p = safeRelPath(m[1]);
+          if (p && !seen.has(p)) { out.push(p); seen.add(p); }
+        }
+
+        // Plain: rel_path: captures/foo.jpg
+        const rePlain = /\brel_path\b\s*[:=]\s*([^\s"'`<>\]]+)/gi;
+        while ((m = rePlain.exec(t)) !== null) {
+          const p = safeRelPath(m[1]);
+          if (p && !seen.has(p)) { out.push(p); seen.add(p); }
+        }
+
+        // Loose fallback (common folders + media extensions).
+        const reLoose = /\b(?:captures|uploads|downloads)\/[a-zA-Z0-9._\-\/]+\.(?:png|jpe?g|gif|webp|bmp|svg|mp4|webm|mkv|mov|m4v|3gp|mp3|wav|ogg|m4a|aac|flac)\b/gi;
+        while ((m = reLoose.exec(t)) !== null) {
+          const p = safeRelPath(m[0]);
+          if (p && !seen.has(p)) { out.push(p); seen.add(p); }
+        }
+
+        return out.slice(0, 4);
+      }
+
+      function renderInlineAttachments(msgDiv, rawText) {
+        const paths = extractRelPathsFromText(rawText);
+        if (!paths.length) return;
+
+        const wrap = document.createElement("div");
+        wrap.className = "attach-wrap";
+
+        for (const p0 of paths) {
+          const p = safeRelPath(p0);
+          if (!p) continue;
+          const kind = kindFor(p);
+          const card = document.createElement("div");
+          card.className = "attach-card";
+
+          const head = document.createElement("div");
+          head.className = "attach-head";
+          const pathEl = document.createElement("div");
+          pathEl.className = "attach-path";
+          pathEl.textContent = p;
+          const actions = document.createElement("div");
+          actions.className = "attach-actions";
+          const shareBtn = document.createElement("button");
+          shareBtn.className = "attach-icon-btn";
+          shareBtn.title = "Share";
+          shareBtn.setAttribute("aria-label", "Share");
+          shareBtn.innerHTML = "&#10150;";
+          shareBtn.addEventListener("click", async (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            try {
+              await requestPermission("device.files", "Share user file: " + p);
+            } catch (_) {
+              showToast("File permission required", 1600);
+              return;
+            }
+            try {
+              if (typeof AndroidBridge !== "undefined" && AndroidBridge.shareUserFile) {
+                AndroidBridge.shareUserFile(p, mimeForPath(p));
+              } else {
+                showToast("Share not available", 1600);
+              }
+            } catch (_) {
+              showToast("Share failed", 1800);
+            }
+          });
+          actions.appendChild(shareBtn);
+          head.appendChild(pathEl);
+          head.appendChild(actions);
+
+          const body = document.createElement("div");
+          body.className = "attach-body";
+          const hint = document.createElement("div");
+          hint.className = "attach-hint";
+          hint.textContent = "Loading preview...";
+
+          card.appendChild(head);
+          card.appendChild(body);
+          card.appendChild(hint);
+
+          wrap.appendChild(card);
+
+          (async () => {
+            try {
+              await requestPermission("device.files", "Preview user file: " + p);
+              const src = API + "/user/file?path=" + encodeURIComponent(p);
+              if (kind === "image") {
+                const img = document.createElement("img");
+                img.alt = p;
+                img.src = src;
+                img.dataset.relPath = p;
+                img.style.cursor = "zoom-in";
+                img.addEventListener("click", () => {
+                  try { openViewerFor(p); } catch (_) {}
+                });
+                body.appendChild(img);
+                hint.textContent = "Image";
+              } else if (kind === "video") {
+                const v = document.createElement("video");
+                v.controls = true;
+                v.playsInline = true;
+                v.src = src;
+                body.appendChild(v);
+                hint.textContent = "Video";
+              } else if (kind === "audio") {
+                const a = document.createElement("audio");
+                a.controls = true;
+                a.src = src;
+                body.appendChild(a);
+                hint.textContent = "Audio";
+              } else {
+                hint.textContent = "No inline preview for this file type. Tap Open.";
+              }
+            } catch (e) {
+              hint.textContent = "Preview blocked (permission required). Tap Open.";
+            }
+          })();
+        }
+
+        if (wrap.childNodes.length) msgDiv.appendChild(wrap);
+      }
+
+      // ==============================
+      // Fullscreen image viewer (tap image, pinch zoom, swipe)
+      // ==============================
+      const viewer = $("viewer");
+      const viewerClose = $("viewerClose");
+      const viewerShare = $("viewerShare");
+      const viewerTitle = $("viewerTitle");
+      const viewerImg = $("viewerImg");
+      const viewerBody = $("viewerBody");
+
+      let viewerPaths = [];
+      let viewerIndex = 0;
+      let vScale = 1.0;
+      let vTx = 0.0;
+      let vTy = 0.0;
+      let vTouchMode = "";
+      let vStartDist = 0.0;
+      let vStartScale = 1.0;
+      let vStartTx = 0.0;
+      let vStartTy = 0.0;
+      let vStartX = 0.0;
+      let vStartY = 0.0;
+      let vSwipeStartX = 0.0;
+      let vSwipeStartY = 0.0;
+      let vSwipeAt = 0;
+
+      function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+      function applyViewerTransform() {
+        viewerImg.style.transform = `translate(${vTx}px, ${vTy}px) scale(${vScale})`;
+      }
+      function resetViewerTransform() {
+        vScale = 1.0; vTx = 0.0; vTy = 0.0;
+        applyViewerTransform();
+      }
+      function collectViewerPaths() {
+        const imgs = Array.from(document.querySelectorAll('.attach-body img[data-rel-path]'));
+        const out = [];
+        const seen = new Set();
+        for (const im of imgs) {
+          const p = safeRelPath(im.dataset.relPath || "");
+          if (p && !seen.has(p)) { out.push(p); seen.add(p); }
+        }
+        return out;
+      }
+      async function setViewerImage(p) {
+        const rel = safeRelPath(p);
+        if (!rel) return;
+        viewerTitle.textContent = rel;
+        try {
+          await requestPermission("device.files", "Preview user file: " + rel);
+        } catch (_) {
+          showToast("File permission required", 1600);
+          return;
+        }
+        viewerImg.src = API + "/user/file?path=" + encodeURIComponent(rel);
+        viewerImg.alt = rel;
+        resetViewerTransform();
+      }
+      async function openViewerFor(p) {
+        const rel = safeRelPath(p);
+        if (!rel) return;
+        viewerPaths = collectViewerPaths();
+        const idx = viewerPaths.indexOf(rel);
+        viewerIndex = idx >= 0 ? idx : 0;
+        viewer.classList.add("show");
+        await setViewerImage(rel);
+      }
+      function closeViewer() {
+        viewer.classList.remove("show");
+        viewerImg.src = "";
+        viewerPaths = [];
+        viewerIndex = 0;
+        resetViewerTransform();
+      }
+      async function viewerNext(dir) {
+        if (!viewerPaths.length) return;
+        viewerIndex = (viewerIndex + dir + viewerPaths.length) % viewerPaths.length;
+        await setViewerImage(viewerPaths[viewerIndex]);
+      }
+
+      viewerClose.addEventListener("click", closeViewer);
+      viewer.addEventListener("click", (ev) => {
+        if (ev.target === viewer) closeViewer();
+      });
+      viewerShare.addEventListener("click", async () => {
+        const p = viewerTitle.textContent || "";
+        const rel = safeRelPath(p);
+        if (!rel) return;
+        try {
+          await requestPermission("device.files", "Share user file: " + rel);
+        } catch (_) {
+          showToast("File permission required", 1600);
+          return;
+        }
+        try {
+          if (typeof AndroidBridge !== "undefined" && AndroidBridge.shareUserFile) {
+            AndroidBridge.shareUserFile(rel, mimeForPath(rel));
+          } else {
+            showToast("Share not available", 1600);
+          }
+        } catch (_) {
+          showToast("Share failed", 1800);
+        }
+      });
+
+      function dist2(a, b) {
+        const dx = a.clientX - b.clientX;
+        const dy = a.clientY - b.clientY;
+        return Math.hypot(dx, dy);
+      }
+
+      viewerBody.addEventListener("touchstart", (ev) => {
+        if (!viewer.classList.contains("show")) return;
+        if (!ev.touches || ev.touches.length === 0) return;
+        if (ev.touches.length === 2) {
+          vTouchMode = "pinch";
+          vStartDist = dist2(ev.touches[0], ev.touches[1]);
+          vStartScale = vScale;
+          vStartTx = vTx;
+          vStartTy = vTy;
+        } else {
+          vTouchMode = (vScale > 1.02) ? "pan" : "swipe";
+          vStartX = ev.touches[0].clientX;
+          vStartY = ev.touches[0].clientY;
+          vStartTx = vTx;
+          vStartTy = vTy;
+          vSwipeStartX = vStartX;
+          vSwipeStartY = vStartY;
+          vSwipeAt = Date.now();
+        }
+      }, { passive: false });
+
+      viewerBody.addEventListener("touchmove", (ev) => {
+        if (!viewer.classList.contains("show")) return;
+        if (!ev.touches || ev.touches.length === 0) return;
+        ev.preventDefault();
+        if (ev.touches.length === 2) {
+          vTouchMode = "pinch";
+          const d = dist2(ev.touches[0], ev.touches[1]);
+          const ratio = vStartDist > 0 ? (d / vStartDist) : 1.0;
+          vScale = clamp(vStartScale * ratio, 1.0, 6.0);
+          applyViewerTransform();
+          return;
+        }
+        const x = ev.touches[0].clientX;
+        const y = ev.touches[0].clientY;
+        const dx = x - vStartX;
+        const dy = y - vStartY;
+        if (vTouchMode === "pan") {
+          vTx = vStartTx + dx;
+          vTy = vStartTy + dy;
+          applyViewerTransform();
+        } else if (vTouchMode === "swipe") {
+          // Small visual feedback: translate a bit.
+          vTx = dx;
+          vTy = 0;
+          applyViewerTransform();
+        }
+      }, { passive: false });
+
+      viewerBody.addEventListener("touchend", async (ev) => {
+        if (!viewer.classList.contains("show")) return;
+        const now = Date.now();
+        if (vTouchMode === "swipe") {
+          const dx = vTx;
+          const dt = Math.max(1, now - vSwipeAt);
+          const vx = dx / dt; // px/ms
+          resetViewerTransform();
+          if (Math.abs(dx) > 90 || Math.abs(vx) > 0.7) {
+            await viewerNext(dx < 0 ? +1 : -1);
+          }
+        } else if (vTouchMode === "pinch") {
+          if (vScale < 1.02) resetViewerTransform();
+        }
+        vTouchMode = "";
+      }, { passive: false });
+
+      viewerImg.addEventListener("dblclick", (ev) => {
+        ev.preventDefault();
+        resetViewerTransform();
+      });
+
+      // ==============================
       // Chat
       // ==============================
       const chatMessages = $("chatMessages");
@@ -1082,6 +1711,8 @@
         if (meta && meta._ts) div.dataset.ts = String(meta._ts);
         if (role === "assistant" || role === "user") {
           div.innerHTML = renderMarkdown(content);
+          // Attachments should render for both user and assistant messages.
+          try { renderInlineAttachments(div, content); } catch (_) {}
         } else {
           div.textContent = content;
         }
@@ -1193,15 +1824,27 @@
       async function sendChat() {
         if (streaming) return;
         const text = chatInput.value.trim();
-        if (!text) return;
+        const hasAtt = pendingAttachments.length > 0;
+        if (!text && !hasAtt) return;
+
+        // Render a local echo immediately with file chips info; actual upload happens before agent call.
         chatInput.value = "";
         autoResize();
 
-        conversation.push({ role: "user", content: text });
-        saveConversation();
-        const uDiv = addMsg("user", text, { local_echo: true });
+        const previewLines = [];
+        if (text) previewLines.push(text);
+        for (const a of pendingAttachments) {
+          previewLines.push("`" + a.name + "`");
+        }
+        const previewText = previewLines.join("\n");
 
-        await sendAgentChat(text, uDiv);
+        conversation.push({ role: "user", content: previewText });
+        saveConversation();
+        const uDiv = addMsg("user", previewText, { local_echo: true, uploading: hasAtt });
+
+        // Upload attachments (if any) then send a final message with rel_path lines.
+        const finalText = await finalizeAndUploadAttachments(text, uDiv);
+        await sendAgentChat(finalText, uDiv);
       }
 
       async function sendAgentChat(text, uDiv) {
@@ -1274,6 +1917,220 @@
           chatSend.disabled = false;
         }
       }
+
+      // ==============================
+      // Pending attachments (Slack-like)
+      // ==============================
+      const composerAttachments = $("composerAttachments");
+      let pendingAttachments = [];
+      let uploadBusy = false;
+      let recordingBusy = false;
+
+      function fmtBytes(n) {
+        const v = Number(n || 0);
+        if (!isFinite(v) || v <= 0) return "0 B";
+        const units = ["B","KB","MB","GB"];
+        let x = v, u = 0;
+        while (x >= 1024 && u < units.length - 1) { x /= 1024; u++; }
+        return (u === 0 ? String(Math.round(x)) : x.toFixed(1)) + " " + units[u];
+      }
+
+      function renderComposerAttachments() {
+        if (!composerAttachments) return;
+        composerAttachments.innerHTML = "";
+        if (!pendingAttachments.length) {
+          composerAttachments.classList.remove("show");
+          return;
+        }
+        composerAttachments.classList.add("show");
+        pendingAttachments.forEach((a, idx) => {
+          const chip = document.createElement("div");
+          chip.className = "chip";
+          const name = document.createElement("div");
+          name.className = "chip-name";
+          name.textContent = a.name;
+          const sub = document.createElement("div");
+          sub.className = "chip-sub";
+          sub.textContent = a.size ? fmtBytes(a.size) : (a.kind === "recording" ? "recording" : "");
+          const x = document.createElement("button");
+          x.className = "chip-x";
+          x.title = "Remove";
+          x.setAttribute("aria-label", "Remove");
+          x.textContent = "x";
+          x.addEventListener("click", () => {
+            // Revoke object URLs if we created any.
+            if (a._localUrl) { try { URL.revokeObjectURL(a._localUrl); } catch (_) {} }
+            pendingAttachments.splice(idx, 1);
+            renderComposerAttachments();
+          });
+          chip.appendChild(name);
+          chip.appendChild(sub);
+          chip.appendChild(x);
+          composerAttachments.appendChild(chip);
+        });
+      }
+
+      function addPendingFile(f) {
+        if (!f) return;
+        pendingAttachments.push({
+          kind: "file",
+          name: String(f.name || "file"),
+          size: Number(f.size || 0),
+          file: f,
+        });
+        renderComposerAttachments();
+      }
+
+      function addPendingRecording(blob, name) {
+        if (!blob) return;
+        pendingAttachments.push({
+          kind: "recording",
+          name: String(name || ("recording_" + Date.now() + ".webm")),
+          size: Number(blob.size || 0),
+          blob: blob,
+        });
+        renderComposerAttachments();
+      }
+
+      async function finalizeAndUploadAttachments(comment, uDiv) {
+        const text = String(comment || "").trim();
+        if (!pendingAttachments.length) return text || "(no text)";
+        if (uploadBusy) return text || "(upload in progress)";
+        uploadBusy = true;
+        chatSend.disabled = true;
+
+        // Copy and clear composer immediately (so user can continue composing next message).
+        const items = pendingAttachments.slice();
+        pendingAttachments = [];
+        renderComposerAttachments();
+
+        const rels = [];
+        try {
+          await requestPermission("device.files", "Upload attachments");
+        } catch (_) {
+          showToast("File permission required", 1600);
+          uploadBusy = false;
+          chatSend.disabled = false;
+          return (text || "") + (text ? "\n" : "") + "(attachment upload blocked: permission_required)";
+        }
+
+        for (const a of items) {
+          try {
+            const fd = new FormData();
+            if (a.kind === "file") {
+              fd.append("file", a.file, a.name);
+              fd.append("dir", "uploads/chat");
+            } else {
+              fd.append("file", a.blob, a.name);
+              fd.append("dir", "uploads/recordings");
+            }
+            const res = await fetch(API + "/user/upload", { method: "POST", body: fd });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data && data.path) {
+              rels.push(String(data.path));
+            } else {
+              rels.push("");
+              addMsg("assistant", "Attachment upload failed: " + a.name + " -> " + JSON.stringify(data), { debug: true });
+            }
+          } catch (e) {
+            rels.push("");
+            addMsg("assistant", "Attachment upload error: " + a.name + " -> " + String(e), { debug: true });
+          }
+        }
+
+        const lines = [];
+        if (text) lines.push(text);
+        for (const p of rels.filter(Boolean)) {
+          lines.push("rel_path: " + p);
+        }
+        const finalText = lines.join("\n");
+
+        // Update local echo bubble with final message so inline media renders.
+        try {
+          uDiv.innerHTML = renderMarkdown(finalText);
+          try { renderInlineAttachments(uDiv, finalText); } catch (_) {}
+        } catch (_) {}
+
+        uploadBusy = false;
+        chatSend.disabled = false;
+        saveConversation();
+        return finalText || "(sent)";
+      }
+
+      // Chat-left media buttons (attach + record)
+      (function initChatAttachAndRecord() {
+        const uploadBtn = $("chatUploadBtn");
+        const uploadInput = $("chatUploadInput");
+        const recBtn = $("chatRecordBtn");
+        let rStream = null;
+        let rRec = null;
+        let rChunks = [];
+        if (uploadBtn && uploadInput) {
+          uploadBtn.addEventListener("click", () => uploadInput.click());
+          uploadInput.addEventListener("change", () => {
+            const list = uploadInput.files ? Array.from(uploadInput.files) : [];
+            list.forEach(addPendingFile);
+            uploadInput.value = "";
+          });
+        }
+
+        function setRecordUi(recording) {
+          if (!recBtn) return;
+          if (recording) {
+            recBtn.classList.add("danger");
+            recBtn.title = "Stop recording";
+            recBtn.setAttribute("aria-label", "Stop recording");
+            recBtn.innerHTML = "&#9632;";
+          } else {
+            recBtn.classList.remove("danger");
+            recBtn.title = "Record audio";
+            recBtn.setAttribute("aria-label", "Record audio");
+            recBtn.innerHTML = "&#9679;";
+          }
+        }
+
+        if (recBtn) {
+          setRecordUi(false);
+          recBtn.addEventListener("click", async () => {
+            if (recordingBusy) return;
+            // Toggle stop if active.
+            if (rRec && rRec.state !== "inactive") {
+              try { rRec.stop(); } catch (_) {}
+              setRecordUi(false);
+              recordingBusy = false;
+              return;
+            }
+            try {
+              recordingBusy = true;
+              await requestPermission("device.mic", "Record audio");
+              rChunks = [];
+              rStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+              rRec = new MediaRecorder(rStream);
+              rRec.ondataavailable = (e) => { if (e.data && e.data.size) rChunks.push(e.data); };
+              rRec.onstop = () => {
+                const blob = new Blob(rChunks, { type: rRec.mimeType || "audio/webm" });
+                try { if (rStream) rStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+                rStream = null;
+                rRec = null;
+                rChunks = [];
+                recordingBusy = false;
+                setRecordUi(false);
+                try {
+                  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+                  addPendingRecording(blob, "audio_recording_" + ts + ".webm");
+                } catch (_) {}
+              };
+              rRec.start();
+              setRecordUi(true);
+              showToast("Recording... tap again to stop", 1400);
+            } catch (_) {
+              setRecordUi(false);
+              recordingBusy = false;
+              showToast("Record failed", 1600);
+            }
+          });
+        }
+      })();
 
       async function waitForAgentReply(itemId) {
         const deadline = Date.now() + 15 * 60 * 1000;
@@ -1817,6 +2674,35 @@
         }
       });
 
+      async function loadCloudPrefs() {
+        try {
+          const res = await fetch(API + "/cloud/prefs");
+          if (!res.ok) throw 0;
+          const data = await res.json().catch(() => ({}));
+          const v = Number(data.auto_upload_no_confirm_mb);
+          $("cloudAutoUploadMb").value = (isFinite(v) ? String(v) : "1.0");
+        } catch (_) {
+          $("cloudAutoUploadMb").value = "1.0";
+        }
+      }
+
+      $("cloudPrefsSave").addEventListener("click", async () => {
+        const raw = String($("cloudAutoUploadMb").value || "").trim();
+        const v = parseFloat(raw);
+        if (!isFinite(v) || v < 0) { showToast("Enter a valid number", 1600); return; }
+        try {
+          const res = await fetch(API + "/cloud/prefs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+            body: JSON.stringify({ auto_upload_no_confirm_mb: v }),
+          });
+          if (!res.ok) throw 0;
+          showToast("Cloud prefs saved", 1600);
+        } catch (_) {
+          showToast("Failed to save cloud prefs", 1800);
+        }
+      });
+
       $("restartPython").addEventListener("click", async () => {
         if (typeof AndroidBridge !== "undefined" && AndroidBridge.restartPythonWorker) {
           AndroidBridge.restartPythonWorker();
@@ -1831,6 +2717,15 @@
         if (!window.confirm("Reset UI to defaults? This will overwrite any local changes.")) return;
         if (typeof AndroidBridge !== "undefined" && AndroidBridge.resetUiToDefaults) {
           AndroidBridge.resetUiToDefaults();
+        }
+      });
+
+      $("resetAgentDocs").addEventListener("click", () => {
+        if (!window.confirm("Reset AGENTS.md / TOOLS.md / docs/ to defaults? This will overwrite those files.")) return;
+        if (typeof AndroidBridge !== "undefined" && AndroidBridge.resetUserDefaultsToDefaults) {
+          AndroidBridge.resetUserDefaultsToDefaults();
+        } else {
+          showToast("Reset not available", 1600);
         }
       });
 
@@ -1929,6 +2824,7 @@
       };
 
       loadPermissionPrefs();
+      loadCloudPrefs();
       refreshPipStatus();
       refreshPython();
       refreshSsh();

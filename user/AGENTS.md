@@ -54,3 +54,16 @@ Practical flow:
 - Persistent memory is stored in `MEMORY.md` in the user root.
 - Only update `MEMORY.md` if the user explicitly asks you to remember/save/store/persist something.
 - Use the memory tools to read/write it; do not modify it implicitly.
+
+## Media Handling (Uploads + Recognition)
+
+- Uploading a file is explicit user consent to let you read that uploaded file (treat it as a read grant; do not ask again just to open/read it).
+- If the user uploads media without explaining what they want, you should try to infer the likely intent and propose 1-2 options (e.g. "describe it", "extract text", "detect objects", "transcribe audio").
+- Prefer local processing first:
+  - Images: use `vision.image.load` and local TFLite models (`vision.model.load` + `vision.run`) if an appropriate model is available.
+  - Audio: use local STT only if implemented/available; otherwise ask what the user wants to do with the audio.
+  - Video: if no local pipeline exists, clarify the goal; avoid assuming cloud upload.
+- Cloud multimodal fallback:
+  - If local tooling is insufficient and you have a cloud multimodal path, request explicit permission before uploading any user media to a cloud provider.
+  - Ask only once per session: remember the user's answer in-session so you do not repeatedly ask.
+  - If the media is large (rule of thumb: > 5 MB), confirm again right before uploading and mention the approximate size.

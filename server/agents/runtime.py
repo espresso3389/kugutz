@@ -1031,6 +1031,19 @@ class BrainRuntime:
             },
             {
                 "type": "function",
+                "name": "cloud_request",
+                "description": "Make a cloud HTTP request via the Kotlin broker (supports ${vault:...} and ${file:...} placeholders, permission-gated).",
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "request": {"type": "object", "additionalProperties": True},
+                    },
+                    "required": ["request"],
+                },
+            },
+            {
+                "type": "function",
                 "name": "write_file",
                 "description": "Write UTF-8 text file under user root.",
                 "parameters": {
@@ -1534,7 +1547,7 @@ class BrainRuntime:
             "{type:'shell_exec', cmd:'python|pip|curl', args:'...', cwd:'/subdir'} OR "
             "{type:'filesystem', op:'list_dir|read_file|mkdir|move_path|delete_path', ...} OR "
             "{type:'write_file', path:'relative/path.py', content:'...'} OR "
-            "{type:'tool_invoke', tool:'device_api', args:{...}, detail:'optional'} OR "
+            "{type:'tool_invoke', tool:'device_api|cloud_request', args:{...}, detail:'optional'} OR "
             "{type:'sleep', seconds:1}. "
             "Filesystem action shapes: "
             "- list_dir: {type:'filesystem', op:'list_dir', path:'relative/or/absolute', show_hidden:false, limit:200} "
@@ -1544,6 +1557,7 @@ class BrainRuntime:
             "- delete_path: {type:'filesystem', op:'delete_path', path:'...', recursive:false}. "
             "For device actions, use tool='device_api' and args shape: "
             "{action:'python.status|python.restart|ssh.status|ssh.config|ssh.pin.status|ssh.pin.start|ssh.pin.stop|usb.*|uvc.ptz.*|brain.memory.get|brain.memory.set', payload:{...}, detail:'...'}."
+            "For cloud calls, use tool='cloud_request' and args shape: {request:{url,method,headers,json/body,...}}. "
             "If user asks to check status, include at least one device_api status action. "
             "If user asks to change device state, include one device_api mutating action with minimal payload. "
             "Example output for status request: "
@@ -1803,6 +1817,11 @@ class BrainRuntime:
                 # Keep whatever permission id we used last for future calls.
                 pass
             return body
+        if name == "cloud_request":
+            req = args.get("request")
+            if not isinstance(req, dict):
+                return {"status": "error", "error": "invalid_request"}
+            return self._tool_invoke("cloud_request", {"request": req, "identity": self._active_identity}, None, "cloud_request")
         if name == "write_file":
             action = {
                 "type": "write_file",

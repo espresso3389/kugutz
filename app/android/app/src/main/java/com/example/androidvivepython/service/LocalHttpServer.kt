@@ -16,7 +16,9 @@ import fi.iki.elonen.NanoWSD
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
+import java.net.URLConnection
 import java.net.InetAddress
+import java.net.URI
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
@@ -39,6 +41,7 @@ import jp.espresso3389.kugutz.device.TtsManager
 import jp.espresso3389.kugutz.vision.VisionFrameStore
 import jp.espresso3389.kugutz.vision.VisionImageIo
 import jp.espresso3389.kugutz.vision.TfliteModelManager
+import android.util.Base64
 
 class LocalHttpServer(
     private val context: Context,
@@ -98,7 +101,9 @@ class LocalHttpServer(
         // NanoHTTPD keeps connections alive; if we return early on a POST without consuming the body,
         // leftover bytes can corrupt the next request line (e.g. "{}POST ...").
         // Always read the POST body once up-front and reuse it across handlers.
-        val postBody: String? = if (session.method == Method.POST) readBody(session) else null
+        val contentType = (session.headers["content-type"] ?: "").lowercase()
+        val isMultipart = contentType.contains("multipart/form-data")
+        val postBody: String? = if (session.method == Method.POST && !isMultipart) readBody(session) else null
         return when {
             uri == "/health" -> jsonResponse(
                 JSONObject()
@@ -477,6 +482,32 @@ class LocalHttpServer(
                     ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_json")
                 return handlePipInstall(session, payload)
             }
+            (uri == "/cloud/request" || uri == "/cloud/request/") -> {
+                if (session.method != Method.POST) {
+                    return jsonError(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
+                }
+                val body = (postBody ?: "").ifBlank { "{}" }
+                val payload = runCatching { JSONObject(body) }.getOrNull()
+                    ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_json")
+                return handleCloudRequest(session, payload)
+            }
+            uri == "/cloud/prefs" && session.method == Method.GET -> {
+                val autoMb = cloudPrefs.getFloat("auto_upload_no_confirm_mb", 1.0f).toDouble()
+                return jsonResponse(
+                    JSONObject()
+                        .put("status", "ok")
+                        .put("auto_upload_no_confirm_mb", autoMb)
+                )
+            }
+            uri == "/cloud/prefs" && session.method == Method.POST -> {
+                val body = (postBody ?: "").ifBlank { "{}" }
+                val payload = runCatching { JSONObject(body) }.getOrNull()
+                    ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_json")
+                val v = payload.optDouble("auto_upload_no_confirm_mb", cloudPrefs.getFloat("auto_upload_no_confirm_mb", 1.0f).toDouble())
+                val clamped = v.coerceIn(0.0, 25.0)
+                cloudPrefs.edit().putFloat("auto_upload_no_confirm_mb", clamped.toFloat()).apply()
+                return jsonResponse(JSONObject().put("status", "ok").put("auto_upload_no_confirm_mb", clamped))
+            }
             (uri == "/pip/status" || uri == "/pip/status/") -> {
                 val wheelhouse = WheelhousePaths.forCurrentAbi(context)?.also { it.ensureDirs() }
                 return jsonResponse(
@@ -696,7 +727,12 @@ class LocalHttpServer(
                 val outPath = payload.optString("path", "captures/capture_${System.currentTimeMillis()}.jpg")
                 val lens = payload.optString("lens", "back")
                 val file = userPath(outPath) ?: return jsonError(Response.Status.BAD_REQUEST, "path_outside_user_dir")
-                return jsonResponse(JSONObject(camera.captureStill(file, lens)))
+                val q = payload.optInt("jpeg_quality", 95).coerceIn(40, 100)
+                val exp = if (payload.has("exposure_compensation")) payload.optInt("exposure_compensation") else null
+                val out = JSONObject(camera.captureStill(file, lens, jpegQuality = q, exposureCompensation = exp))
+                // Absolute path is useful for logs/debugging, but tools should prefer rel_path under user root.
+                out.put("rel_path", outPath)
+                return jsonResponse(out)
             }
             (uri == "/ble/status" || uri == "/ble/status/") && session.method == Method.GET -> {
                 val ok = ensureDevicePermission(session, JSONObject(), tool = "device.ble", capability = "ble", detail = "Bluetooth status")
@@ -1053,7 +1089,156 @@ class LocalHttpServer(
                 val decoded = URLDecoder.decode(raw, StandardCharsets.UTF_8.name())
                 serveUiFile(decoded)
             }
+            uri == "/user/list" && session.method == Method.GET -> {
+                val ok = ensureDevicePermission(
+                    session,
+                    JSONObject(),
+                    tool = "device.files",
+                    capability = "files",
+                    detail = "List user files"
+                )
+                if (!ok.first) return ok.second!!
+                handleUserList(session)
+            }
+            uri == "/user/file" && session.method == Method.GET -> {
+                val rel = firstParam(session, "path")
+                val ok = ensureDevicePermission(
+                    session,
+                    JSONObject(),
+                    tool = "device.files",
+                    capability = "files",
+                    detail = ("Read user file: " + rel).take(180)
+                )
+                if (!ok.first) return ok.second!!
+                serveUserFile(session)
+            }
+            uri == "/user/upload" && session.method == Method.POST -> {
+                val name = firstParam(session, "name")
+                val dir = (firstParam(session, "dir").ifBlank { firstParam(session, "path") })
+                val detail = ("Upload user file: " + (if (dir.isBlank()) name else (dir.trimEnd('/') + "/" + name))).take(180)
+                val ok = ensureDevicePermission(
+                    session,
+                    // Upload is multipart; allow passing permission_id as query/form param for one-off calls.
+                    JSONObject().put("permission_id", firstParam(session, "permission_id")),
+                    tool = "device.files",
+                    capability = "files",
+                    detail = detail
+                )
+                if (!ok.first) return ok.second!!
+                handleUserUpload(session)
+            }
             else -> notFound()
+        }
+    }
+
+    private fun firstParam(session: IHTTPSession, name: String): String {
+        return session.parameters[name]?.firstOrNull()?.trim() ?: ""
+    }
+
+    private fun handleUserList(session: IHTTPSession): Response {
+        val rel = firstParam(session, "path").trim().trimStart('/')
+        val root = File(context.filesDir, "user").canonicalFile
+        val dir = if (rel.isBlank()) root else userPath(rel) ?: return jsonError(Response.Status.BAD_REQUEST, "path_outside_user_dir")
+        if (!dir.exists()) return jsonError(Response.Status.NOT_FOUND, "not_found")
+        if (!dir.isDirectory) return jsonError(Response.Status.BAD_REQUEST, "not_a_directory")
+
+        val arr = org.json.JSONArray()
+        val kids = dir.listFiles()?.sortedBy { it.name.lowercase() } ?: emptyList()
+        for (f in kids) {
+            val item = JSONObject()
+                .put("name", f.name)
+                .put("is_dir", f.isDirectory)
+                .put("size", if (f.isFile) f.length() else 0L)
+                .put("mtime_ms", f.lastModified())
+            arr.put(item)
+        }
+        val outRel = if (dir == root) "" else dir.relativeTo(root).path.replace("\\", "/")
+        return jsonResponse(JSONObject().put("status", "ok").put("path", outRel).put("items", arr))
+    }
+
+    private fun serveUserFile(session: IHTTPSession): Response {
+        val rel = firstParam(session, "path")
+        if (rel.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "path_required")
+        val file = userPath(rel) ?: return jsonError(Response.Status.BAD_REQUEST, "path_outside_user_dir")
+        if (!file.exists() || !file.isFile) return jsonError(Response.Status.NOT_FOUND, "not_found")
+
+        val mime = URLConnection.guessContentTypeFromName(file.name) ?: mimeTypeFor(file.name)
+        val stream: InputStream = FileInputStream(file)
+        val response = newChunkedResponse(Response.Status.OK, mime, stream)
+        response.addHeader("Cache-Control", "no-cache")
+        response.addHeader("X-Content-Type-Options", "nosniff")
+        return response
+    }
+
+    private fun handleUserUpload(session: IHTTPSession): Response {
+        val files = HashMap<String, String>()
+        val parms = session.parameters
+        try {
+            session.parseBody(files)
+        } catch (ex: Exception) {
+            Log.w(TAG, "user upload parse failed", ex)
+            return jsonError(Response.Status.BAD_REQUEST, "upload_parse_failed", JSONObject().put("detail", ex.message ?: ""))
+        }
+
+        val tmp = files["file"] ?: files.entries.firstOrNull()?.value
+        if (tmp.isNullOrBlank()) return jsonError(Response.Status.BAD_REQUEST, "file_required")
+
+        // NanoHTTPD sets the uploaded filename as a parameter with the same field name.
+        val originalName = (parms["file"]?.firstOrNull() ?: "").trim()
+        val name = (parms["name"]?.firstOrNull() ?: originalName).trim().ifBlank {
+            "upload_" + System.currentTimeMillis().toString()
+        }
+        val dir = (parms["dir"]?.firstOrNull() ?: parms["path"]?.firstOrNull() ?: "").trim().trimStart('/')
+        val relPath = if (dir.isBlank()) "uploads/$name" else (dir.trimEnd('/') + "/" + name)
+        val out = userPath(relPath) ?: return jsonError(Response.Status.BAD_REQUEST, "path_outside_user_dir")
+        out.parentFile?.mkdirs()
+
+        return try {
+            File(tmp).inputStream().use { inp ->
+                out.outputStream().use { outp ->
+                    inp.copyTo(outp)
+                }
+            }
+            // Upload is an explicit user action (file picker + send). Treat it as consent to let the
+            // agent/UI read uploaded user files without re-prompting for device.files.
+            try {
+                val headerIdentity = (session.headers["x-kugutz-identity"] ?: "").trim()
+                val identity = (parms["identity"]?.firstOrNull() ?: "").trim()
+                    .ifBlank { headerIdentity }
+                    .ifBlank { installIdentity.get() }
+                if (identity.isNotBlank()) {
+                    val scope = if (permissionPrefs.rememberApprovals()) "persistent" else "session"
+                    val existing = permissionStore.findReusableApproved(
+                        tool = "device.files",
+                        scope = scope,
+                        identity = identity,
+                        capability = "files"
+                    )
+                    if (existing == null) {
+                        val req = permissionStore.create(
+                            tool = "device.files",
+                            detail = "Read uploaded user files",
+                            scope = scope,
+                            identity = identity,
+                            capability = "files"
+                        )
+                        val approved = permissionStore.updateStatus(req.id, "approved")
+                        if (approved != null) {
+                            maybeGrantDeviceCapability(approved)
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Best-effort only; upload must succeed even if permission state can't be updated.
+            }
+            jsonResponse(
+                JSONObject()
+                    .put("status", "ok")
+                    .put("path", relPath)
+                    .put("size", out.length())
+            )
+        } catch (ex: Exception) {
+            jsonError(Response.Status.INTERNAL_ERROR, "upload_failed", JSONObject().put("detail", ex.message ?: ""))
         }
     }
 
@@ -2658,6 +2843,316 @@ class LocalHttpServer(
         }
     }
 
+    private data class CloudExpansion(
+        val usedVaultKeys: MutableSet<String> = linkedSetOf(),
+        val usedConfigKeys: MutableSet<String> = linkedSetOf(),
+        val usedFiles: MutableSet<String> = linkedSetOf(),
+        var uploadBytes: Long = 0L,
+    )
+
+    private fun expandTemplateString(s: String, exp: CloudExpansion): String {
+        // Minimal deterministic template expansion.
+        //
+        // ${vault:key} -> credentialStore (secret)
+        // ${config:brain.api_key|brain.base_url|brain.model|brain.vendor} -> brain SharedPreferences
+        // ${file:rel_path[:base64|text]} -> read from user root (base64 or utf-8 text)
+        // ICU regex on Android treats a bare '}' as syntax error; escape both braces.
+        val re = Regex("\\$\\{([^}]+)\\}")
+        return re.replace(s) { m ->
+            val raw = m.groupValues.getOrNull(1)?.trim().orEmpty()
+            val parts = raw.split(":", limit = 3).map { it.trim() }
+            if (parts.isEmpty()) return@replace m.value
+            val kind = parts[0]
+            if (kind == "vault" && parts.size >= 2) {
+                val key = parts[1]
+                exp.usedVaultKeys.add(key)
+                return@replace (credentialStore.get(key)?.value ?: "").trim()
+            }
+            if (kind == "config" && parts.size >= 2) {
+                val key = parts[1]
+                exp.usedConfigKeys.add(key)
+                return@replace when (key) {
+                    "brain.api_key" -> (brainPrefs.getString("api_key", "") ?: "")
+                    "brain.base_url" -> (brainPrefs.getString("base_url", "") ?: "")
+                    "brain.model" -> (brainPrefs.getString("model", "") ?: "")
+                    "brain.vendor" -> (brainPrefs.getString("vendor", "") ?: "")
+                    else -> ""
+                }
+            }
+            if (kind == "file" && parts.size >= 2) {
+                val rel = parts[1].trim().trimStart('/')
+                val mode = if (parts.size >= 3) parts[2].trim().lowercase() else "base64"
+                val f = userPath(rel) ?: return@replace ""
+                if (!f.exists() || !f.isFile) return@replace ""
+                exp.usedFiles.add(rel)
+                return@replace try {
+                    val bytes = f.readBytes()
+                    exp.uploadBytes += bytes.size.toLong()
+                    when (mode) {
+                        "text" -> bytes.toString(Charsets.UTF_8)
+                        else -> Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    }
+                } catch (_: Exception) {
+                    ""
+                }
+            }
+            m.value
+        }
+    }
+
+    private fun expandJsonValue(v: Any?, exp: CloudExpansion): Any? {
+        return when (v) {
+            null, JSONObject.NULL -> JSONObject.NULL
+            is String -> expandTemplateString(v, exp)
+            is JSONObject -> {
+                val out = JSONObject()
+                val it = v.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    out.put(k, expandJsonValue(v.opt(k), exp))
+                }
+                out
+            }
+            is org.json.JSONArray -> {
+                val arr = org.json.JSONArray()
+                for (i in 0 until v.length()) {
+                    arr.put(expandJsonValue(v.opt(i), exp))
+                }
+                arr
+            }
+            else -> v
+        }
+    }
+
+    private fun isBlockedCloudHost(host: String): Boolean {
+        val h = host.trim().lowercase()
+        if (h.isBlank()) return true
+        if (h == "localhost") return true
+        if (h == "127.0.0.1" || h == "::1") return true
+        return false
+    }
+
+    private fun isPrivateAddress(addr: InetAddress): Boolean {
+        return addr.isAnyLocalAddress ||
+            addr.isLoopbackAddress ||
+            addr.isLinkLocalAddress ||
+            addr.isSiteLocalAddress ||
+            addr.isMulticastAddress
+    }
+
+    private fun ensureCloudPermission(
+        session: IHTTPSession,
+        payload: JSONObject,
+        tool: String,
+        capability: String,
+        detail: String
+    ): Pair<Boolean, Response?> {
+        val headerIdentity = (session.headers["x-kugutz-identity"] ?: "").trim()
+        val identity = payload.optString("identity", "").trim().ifBlank { headerIdentity }.ifBlank { installIdentity.get() }
+        var permissionId = payload.optString("permission_id", "").trim()
+
+        // Cloud calls are "ask once per session" regardless of remember-approvals UI.
+        val scope = "session"
+
+        if (!isPermissionApproved(permissionId, consume = true) && identity.isNotBlank()) {
+            val reusable = permissionStore.findReusableApproved(
+                tool = tool,
+                scope = scope,
+                identity = identity,
+                capability = capability
+            )
+            if (reusable != null) {
+                permissionId = reusable.id
+            }
+        }
+
+        if (!isPermissionApproved(permissionId, consume = true)) {
+            val req = permissionStore.create(
+                tool = tool,
+                detail = detail.take(240),
+                scope = scope,
+                identity = identity,
+                capability = capability
+            )
+            sendPermissionPrompt(req.id, req.tool, req.detail, false)
+            val requestJson = JSONObject()
+                .put("id", req.id)
+                .put("status", req.status)
+                .put("tool", req.tool)
+                .put("detail", req.detail)
+                .put("scope", req.scope)
+                .put("created_at", req.createdAt)
+                .put("identity", req.identity)
+                .put("capability", req.capability)
+            val out = JSONObject()
+                .put("status", "permission_required")
+                .put("request", requestJson)
+            return Pair(false, newFixedLengthResponse(Response.Status.FORBIDDEN, "application/json", out.toString()))
+        }
+
+        return Pair(true, null)
+    }
+
+    private fun handleCloudRequest(session: IHTTPSession, payload: JSONObject): Response {
+        val method = payload.optString("method", "POST").trim().uppercase().ifBlank { "POST" }
+        val rawUrl = payload.optString("url", "").trim()
+        if (rawUrl.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "url_required")
+
+        val exp = CloudExpansion()
+        val urlExpanded = expandTemplateString(rawUrl, exp)
+        val uri = runCatching { URI(urlExpanded) }.getOrNull()
+            ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_url")
+        val scheme = (uri.scheme ?: "").lowercase()
+        if (scheme != "https" && !(scheme == "http" && payload.optBoolean("allow_insecure_http", false))) {
+            return jsonError(Response.Status.BAD_REQUEST, "scheme_not_allowed")
+        }
+        val host = (uri.host ?: "").trim()
+        if (isBlockedCloudHost(host)) return jsonError(Response.Status.BAD_REQUEST, "host_not_allowed")
+        try {
+            val resolved = InetAddress.getAllByName(host)
+            if (resolved.any { isPrivateAddress(it) }) {
+                return jsonError(Response.Status.BAD_REQUEST, "host_private_not_allowed")
+            }
+        } catch (_: Exception) {
+            return jsonError(Response.Status.BAD_REQUEST, "host_resolve_failed")
+        }
+
+        val headersIn = payload.optJSONObject("headers") ?: JSONObject()
+        val headersOut = JSONObject()
+        val headerKeys = headersIn.keys()
+        while (headerKeys.hasNext()) {
+            val k = headerKeys.next()
+            val v = headersIn.optString(k, "")
+            headersOut.put(k, expandTemplateString(v, exp))
+        }
+
+        val jsonBody = payload.opt("json")
+        val bodyStr = payload.optString("body", "")
+        val bodyB64 = payload.optString("body_base64", "")
+
+        var outBytes: ByteArray? = null
+        var contentType: String? = null
+        if (jsonBody != null && jsonBody != JSONObject.NULL) {
+            val expanded = expandJsonValue(jsonBody, exp)
+            val txt = when (expanded) {
+                is JSONObject -> expanded.toString()
+                is org.json.JSONArray -> expanded.toString()
+                is String -> expanded
+                else -> (JSONObject.wrap(expanded) ?: JSONObject.NULL).toString()
+            }
+            outBytes = txt.toByteArray(Charsets.UTF_8)
+            exp.uploadBytes += outBytes.size.toLong()
+            contentType = "application/json; charset=utf-8"
+        } else if (bodyB64.isNotBlank()) {
+            val b64Expanded = expandTemplateString(bodyB64, exp)
+            outBytes = runCatching { Base64.decode(b64Expanded, Base64.DEFAULT) }.getOrNull()
+                ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_body_base64")
+            exp.uploadBytes += outBytes.size.toLong()
+            contentType = payload.optString("content_type", "").trim().ifBlank { "application/octet-stream" }
+        } else if (bodyStr.isNotBlank()) {
+            val expanded = expandTemplateString(bodyStr, exp)
+            outBytes = expanded.toByteArray(Charsets.UTF_8)
+            exp.uploadBytes += outBytes.size.toLong()
+            contentType = payload.optString("content_type", "").trim().ifBlank { "text/plain; charset=utf-8" }
+        }
+
+        val missingVault = exp.usedVaultKeys.filter { (credentialStore.get(it)?.value ?: "").trim().isBlank() }
+        if (missingVault.isNotEmpty()) {
+            return jsonError(
+                Response.Status.BAD_REQUEST,
+                "missing_vault_key",
+                JSONObject().put("keys", org.json.JSONArray(missingVault))
+            )
+        }
+        if (exp.usedConfigKeys.contains("brain.api_key") && (brainPrefs.getString("api_key", "") ?: "").isBlank()) {
+            return jsonError(Response.Status.BAD_REQUEST, "missing_brain_api_key")
+        }
+
+        val autoMb = cloudPrefs.getFloat("auto_upload_no_confirm_mb", 1.0f).toDouble().coerceIn(0.0, 25.0)
+        val threshold = (autoMb * 1024.0 * 1024.0).toLong().coerceIn(0L, 50L * 1024L * 1024L)
+        if (exp.uploadBytes > threshold && !payload.optBoolean("confirm_large", false)) {
+            return jsonError(
+                Response.Status.BAD_REQUEST,
+                "confirm_large_required",
+                JSONObject()
+                    .put("host", host)
+                    .put("upload_bytes", exp.uploadBytes)
+                    .put("threshold_bytes", threshold)
+            )
+        }
+
+        val tool = if (exp.usedFiles.isNotEmpty() || exp.uploadBytes > 0) "cloud.media_upload" else "cloud.http"
+        val cap = tool + ":" + host
+        val detail = (tool + " -> " + host + " " + method + " " + (uri.path ?: "/") + " bytes=" + exp.uploadBytes).take(220)
+        val perm = ensureCloudPermission(session, payload, tool = tool, capability = cap, detail = detail)
+        if (!perm.first) return perm.second!!
+
+        val timeoutS = payload.optDouble("timeout_s", 45.0).coerceIn(3.0, 120.0)
+        val maxResp = payload.optInt("max_response_bytes", 1024 * 1024).coerceIn(16 * 1024, 5 * 1024 * 1024)
+
+        return try {
+            val urlObj = java.net.URL(urlExpanded)
+            val conn = (urlObj.openConnection() as java.net.HttpURLConnection).apply {
+                requestMethod = method
+                connectTimeout = (timeoutS * 1000).toInt()
+                readTimeout = (timeoutS * 1000).toInt()
+                instanceFollowRedirects = false
+                useCaches = false
+                doInput = true
+            }
+
+            val hk = headersOut.keys()
+            while (hk.hasNext()) {
+                val k = hk.next()
+                conn.setRequestProperty(k, headersOut.optString(k, ""))
+            }
+
+            if (outBytes != null && (method == "POST" || method == "PUT" || method == "PATCH")) {
+                conn.doOutput = true
+                if (!contentType.isNullOrBlank() && conn.getRequestProperty("Content-Type").isNullOrBlank()) {
+                    conn.setRequestProperty("Content-Type", contentType)
+                }
+                conn.outputStream.use { it.write(outBytes) }
+            }
+
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
+            val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
+            val truncated = bytes.size > maxResp
+            val slice = if (truncated) bytes.copyOfRange(0, maxResp) else bytes
+            val ct = (conn.contentType ?: "").trim()
+            val isJson = ct.lowercase().contains("application/json")
+
+            val bodyOut = JSONObject()
+                .put("status", "ok")
+                .put("http_status", code)
+                .put("content_type", ct)
+                .put("truncated", truncated)
+                .put("bytes", bytes.size)
+                .put("host", host)
+                .put("used_files", org.json.JSONArray(exp.usedFiles.toList()))
+            if (isJson) {
+                val txt = slice.toString(Charsets.UTF_8)
+                val parsedObj = runCatching { JSONObject(txt) }.getOrNull()
+                val parsedArr = if (parsedObj == null) runCatching { org.json.JSONArray(txt) }.getOrNull() else null
+                if (parsedObj != null) {
+                    bodyOut.put("json", parsedObj)
+                } else if (parsedArr != null) {
+                    bodyOut.put("json", parsedArr)
+                } else {
+                    bodyOut.put("text", txt.take(20000))
+                }
+            } else {
+                bodyOut.put("text", slice.toString(Charsets.UTF_8).take(20000))
+            }
+            jsonResponse(bodyOut)
+        } catch (ex: java.net.SocketTimeoutException) {
+            jsonError(Response.Status.SERVICE_UNAVAILABLE, "upstream_timeout")
+        } catch (ex: Exception) {
+            jsonError(Response.Status.INTERNAL_ERROR, "cloud_request_failed", JSONObject().put("detail", ex.message ?: ""))
+        }
+    }
+
     private fun resolvePythonBinary(): File? {
         // Prefer native lib (has correct SELinux context for execution)
         val nativeDir = context.applicationInfo.nativeLibraryDir
@@ -2717,6 +3212,11 @@ class LocalHttpServer(
     // --- Brain config (SharedPreferences) ---
     private val brainPrefs by lazy {
         context.getSharedPreferences("brain_config", Context.MODE_PRIVATE)
+    }
+
+    // --- Cloud request prefs ---
+    private val cloudPrefs by lazy {
+        context.getSharedPreferences("cloud_prefs", Context.MODE_PRIVATE)
     }
 
     private fun readMemory(): String {

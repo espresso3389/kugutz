@@ -37,6 +37,43 @@ Notes:
 
 Used for allowlisted device control-plane actions (python/ssh/memory/shell.exec, etc). Some actions require user approval and will return `permission_required`.
 
+### Camera Quickstart (Take A Picture)
+
+Use `device_api` (do not try to `pip install` camera bindings):
+
+Example:
+
+```json
+{
+  "type": "tool_invoke",
+  "tool": "device_api",
+  "args": {
+    "action": "camera.capture",
+    "payload": { "path": "captures/latest.jpg", "lens": "back" },
+    "detail": "Take a picture"
+  }
+}
+```
+
+On success, the response includes `rel_path` (like `captures/latest.jpg`). Prefer `rel_path` for any filesystem tools and for `vision.image.load`.
+
+### Show Media Inline In Chat (Required)
+
+The WebView chat UI auto-renders media previews when a message contains one or more lines like:
+
+```
+rel_path: captures/latest.jpg
+```
+
+So when you take a picture (or upload/record a file), you MUST include `rel_path: <path>` in your assistant message to show it inline.
+
+User UX notes:
+- Tapping an image opens a fullscreen viewer (swipe between images, pinch zoom).
+- Media cards include a Share icon.
+
+To fetch the image onto your dev machine, use the local file endpoint (permission-gated under `device.files`):
+- `GET /user/file?path=<rel_path>` (example: `/user/file?path=captures/latest.jpg`)
+
 ## Docs Index
 
 Read the relevant doc when working in that domain:
@@ -66,6 +103,37 @@ Permissions are created via the local HTTP endpoint:
   - `capability`: capability name (optional; derived from `tool` when `tool` starts with `device.`)
 
 After the user approves, the app records a device grant for `(identity, capability)` so subsequent device calls (for the same identity) can succeed without passing a `permission_id`.
+
+### One-Off Session Permission (Cloud Media Upload)
+
+If you need to upload user media (image/audio/video) to a cloud AI provider for analysis, request explicit permission once per session first (and do not repeatedly ask). Use a non-device tool name like `cloud.media_upload`:
+
+- `POST /permissions/request` with:
+  - `tool`: `cloud.media_upload`
+  - `detail`: e.g. `Upload image to cloud model for analysis`
+  - `scope`: `session`
+
+## Cloud Request Tool (HTTP Broker)
+
+Use cloud requests when local infrastructure is insufficient (e.g. you need a cloud multimodal model).
+The agent should craft the request template; the Kotlin broker expands placeholders and injects secrets.
+
+Endpoint:
+- `POST /cloud/request`
+
+Template placeholders (expanded server-side, never echoed back):
+- `${vault:<name>}`: credential stored in vault (via `/vault/credentials/<name>`)
+- `${config:brain.api_key|brain.base_url|brain.model|brain.vendor}`: brain config values
+- `${file:<rel_path>:base64}`: base64 of a user-root file (e.g. `captures/latest.jpg`)
+- `${file:<rel_path>:text}`: UTF-8 decode of a user-root file
+
+Large uploads:
+- If total upload bytes exceed ~5MB, `/cloud/request` returns `error=confirm_large_required`.
+  Ask the user to confirm, then retry with `confirm_large:true`.
+
+Cloud prefs:
+- `GET /cloud/prefs` and `POST /cloud/prefs`
+  - `auto_upload_no_confirm_mb` (default ~1.0): payloads <= this size do not require an extra "confirm_large" step.
 
 ### Python Helper
 

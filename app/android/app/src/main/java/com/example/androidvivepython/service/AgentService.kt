@@ -8,8 +8,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.Build
+import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import jp.espresso3389.kugutz.ui.MainActivity
 import java.util.concurrent.Executors
@@ -66,7 +69,7 @@ class AgentService : LifecycleService() {
         }
         vaultServer = KeystoreVaultServer(this).apply { start() }
         registerPermissionPromptReceiver()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        startForegroundCompat(buildNotification())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -167,8 +170,37 @@ class AgentService : LifecycleService() {
                     else -> null
                 }
             )
-            startForeground(NOTIFICATION_ID, fg)
+            startForegroundCompat(fg)
         } catch (_: Exception) {
+        }
+    }
+
+    private fun startForegroundCompat(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Declare only types we are currently eligible for.
+            //
+            // On Android 14+ a foreground service started with type MICROPHONE/CAMERA/etc can throw
+            // SecurityException if the corresponding runtime permission isn't granted yet.
+            //
+            // We keep the manifest declaration broad (so features can work), but keep the runtime
+            // startForeground(...) types conservative and permission-aware.
+            var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            }
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            // Connected-device is only safe to declare when the relevant runtime permission is granted.
+            // This keeps us compatible with Android 12+ Bluetooth runtime permission model.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                    types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                }
+            }
+            startForeground(NOTIFICATION_ID, notification, types)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
         }
     }
 

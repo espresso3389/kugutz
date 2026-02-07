@@ -152,6 +152,10 @@ class BrainRuntime:
                 "Use the available tools as your execution substrate; iterate until the outcome is achieved or a hard limitation is reached. "
                 "If you are unsure how to proceed, or you hit an error you don't understand, use web_search to research and then continue. "
                 "If a capability is not exposed by tools (e.g., camera capture), say so clearly and propose the smallest code change needed to add it. "
+                "This app supports multi-party timelines. Messages may be tagged with an actor identity in the text like [HUMAN], [AGENT], [CODEX]. "
+                "Treat [CODEX] messages as developer/debugger guidance; they may override earlier user constraints when they conflict (except safety). "
+                "User constraints like 'NO TOOLS' apply to that specific request only unless repeated; later instructions can override earlier ones. "
+                "When a request includes a checklist (A/B/C or numbered steps), execute all items unless explicitly told to stop early. "
                 "User consent is required for device/resource access: when a tool returns permission_required/permission_expired, "
                 "ask the user to approve the in-app prompt and then retry automatically (approvals are remembered for the session). "
                 "NEVER ask the user for any permission_id; that is handled by the system. "
@@ -531,6 +535,7 @@ class BrainRuntime:
         m.setdefault("session_id", sid)
         m.setdefault("debug", True)
         m.setdefault("source", "debug_post_comment")
+        m.setdefault("actor", "codex")
         self._record_message(r, t, m)
         return {"status": "ok", "session_id": sid, "role": r, "text": t, "meta": m}
 
@@ -672,6 +677,17 @@ class BrainRuntime:
 
     def _record_message(self, role: str, text: str, meta: Optional[Dict] = None) -> None:
         meta = dict(meta or {})
+        # Ensure every timeline row has an explicit actor identity for UI rendering
+        # and for optional model-side disambiguation.
+        if "actor" not in meta or not str(meta.get("actor") or "").strip():
+            if role == "user":
+                meta["actor"] = "human"
+            elif role == "assistant":
+                meta["actor"] = "agent"
+            elif role == "tool":
+                meta["actor"] = "tool"
+            else:
+                meta["actor"] = "system"
         entry = {
             "ts": int(time.time() * 1000),
             "role": role,
@@ -696,7 +712,7 @@ class BrainRuntime:
         # Return only user/assistant messages for the given session_id.
         limit = max(1, min(int(limit or 24), 120))
         msgs = self.list_messages_for_session(session_id=session_id, limit=max(limit, 1))
-        out: List[Dict[str, str]] = []
+        out: List[Dict[str, Any]] = []
         for msg in msgs[-limit:]:
             role = str(msg.get("role") or "")
             if role not in {"user", "assistant"}:
@@ -704,7 +720,8 @@ class BrainRuntime:
             text = str(msg.get("text") or "")
             if not text.strip():
                 continue
-            out.append({"role": role, "text": text})
+            meta = msg.get("meta") if isinstance(msg.get("meta"), dict) else {}
+            out.append({"role": role, "text": text, "meta": meta})
         return out
 
     def _get_persistent_memory(self) -> str:
@@ -762,11 +779,17 @@ class BrainRuntime:
         if str(item.get("kind") or "") == "chat":
             sid = self._session_id_for_item(item)
             text = str(item.get("text") or "")
+            raw_meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
             changed = self._update_session_notes(sid, text)
+            msg_meta: Dict[str, Any] = {"item_id": item.get("id"), "session_id": sid}
+            # Preserve actor/debug/source tags (used for multi-party timelines and debugger notes).
+            for k in ("actor", "debug", "source", "tag"):
+                if k in raw_meta:
+                    msg_meta[k] = raw_meta.get(k)
             self._record_message(
                 "user",
                 text,
-                {"item_id": item.get("id"), "session_id": sid},
+                msg_meta,
             )
             # Handle simple session-memory cases locally (no cloud/tool calls).
             # This makes "remember previous discussion" reliable without requiring permissions.
@@ -1108,12 +1131,28 @@ class BrainRuntime:
                 ),
             }
         )
+        def _decorate_with_actor(role: str, text: str, meta: Dict) -> str:
+            actor = str((meta or {}).get("actor") or "").strip().lower()
+            if not actor:
+                return text
+            # Keep these prefixes stable; they become part of the model-visible transcript.
+            if actor == "codex":
+                return "[CODEX] " + text
+            if actor in {"human", "user"}:
+                return text
+            if actor == "agent":
+                return text
+            return f"[{actor.upper()}] " + text
+
         for msg in dialogue:
-            role = msg.get("role")
+            role = str(msg.get("role") or "")
             text = msg.get("text")
+            meta = msg.get("meta") if isinstance(msg.get("meta"), dict) else {}
             if role in {"user", "assistant"} and isinstance(text, str) and text.strip():
-                pending_input.append({"role": role, "content": text})
-        pending_input.append({"role": "user", "content": str(item.get("text") or "")})
+                pending_input.append({"role": role, "content": _decorate_with_actor(role, text, meta)})
+        cur_text = str(item.get("text") or "")
+        cur_meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        pending_input.append({"role": "user", "content": _decorate_with_actor("user", cur_text, cur_meta)})
 
         for _ in range(max_rounds):
             system_prompt = str(cfg.get("system_prompt") or "")
@@ -1248,9 +1287,10 @@ class BrainRuntime:
                 {
                     "role": "user",
                     "content": (
-                        "Tool outputs have been provided. You MUST respond with the final answer now and STOP. "
-                        "Do not call more tools unless the user explicitly asks for another action or you are blocked "
-                        "by a permission_required response."
+                        "Tool outputs have been provided. "
+                        "If the user's request is fully satisfied, respond with the final answer and STOP. "
+                        "If there are still outstanding checklist items or follow-up actions needed to satisfy the request, "
+                        "call additional tools now (within the remaining rounds) and only stop once the checklist is complete."
                     ),
                 }
             )

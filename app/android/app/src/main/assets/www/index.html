@@ -159,6 +159,17 @@
         margin: 0 10px 6px 0;
         vertical-align: middle;
       }
+      /* Multi-party timeline styling (actor tags are injected by the server). */
+      .msg.actor-codex {
+        border-color: rgba(14,165,233,0.5);
+        background: rgba(14,165,233,0.08);
+      }
+      .msg.actor-codex::before {
+        content: "CODEX";
+        color: var(--cyan);
+        background: rgba(14,165,233,0.12);
+        border-color: rgba(14,165,233,0.35);
+      }
       .msg.error {
         align-self: center;
         background: var(--red-soft);
@@ -1060,10 +1071,14 @@
         const div = document.createElement("div");
         const m = (meta && typeof meta === "object") ? meta : {};
         const isDebug = !!(m.debug);
-        div.className = "msg " + role + (isDebug ? " debug" : "");
+        const actorRaw = (m.actor && typeof m.actor === "string") ? m.actor : "";
+        const actor = actorRaw.trim().toLowerCase();
+        const actorClass = actor ? (" actor-" + actor.replace(/[^a-z0-9_-]/g, "")) : "";
+        div.className = "msg " + role + (isDebug ? " debug" : "") + actorClass;
         if (m.item_id) div.dataset.itemId = String(m.item_id);
         if (m.session_id) div.dataset.sessionId = String(m.session_id);
         if (m.debug) div.dataset.debug = "1";
+        if (actor) div.dataset.actor = actor;
         if (meta && meta._ts) div.dataset.ts = String(meta._ts);
         if (role === "assistant" || role === "user") {
           div.innerHTML = renderMarkdown(content);

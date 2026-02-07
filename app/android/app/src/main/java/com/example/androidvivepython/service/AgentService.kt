@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.content.pm.ServiceInfo
+import java.util.ArrayDeque
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
@@ -29,12 +30,35 @@ class AgentService : LifecycleService() {
     private val sshAuthExecutor = Executors.newSingleThreadScheduledExecutor()
     private var lastActiveAuthMode: String = ""
     private var permissionReceiverRegistered = false
+
+    // Permission prompt notifications:
+    // - Show exactly one notification at a time.
+    // - Queue subsequent prompts and show them one-by-one once the current is resolved or dismissed.
+    data class PermissionPrompt(val id: String, val tool: String, val detail: String)
+    private val permissionPromptQueue: ArrayDeque<PermissionPrompt> = ArrayDeque()
+    private var activePermissionPrompt: PermissionPrompt? = null
+    private val permissionNotifLock = Any()
     private val permissionPromptReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val id = intent?.getStringExtra(LocalHttpServer.EXTRA_PERMISSION_ID) ?: return
             val tool = intent.getStringExtra(LocalHttpServer.EXTRA_PERMISSION_TOOL) ?: "unknown"
             val detail = intent.getStringExtra(LocalHttpServer.EXTRA_PERMISSION_DETAIL) ?: ""
-            showPermissionNotification(id, tool, detail)
+            enqueuePermissionPrompt(PermissionPrompt(id, tool, detail))
+        }
+    }
+
+    private val permissionResolvedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val id = intent?.getStringExtra(LocalHttpServer.EXTRA_PERMISSION_ID) ?: return
+            val status = intent.getStringExtra(LocalHttpServer.EXTRA_PERMISSION_STATUS) ?: ""
+            onPermissionResolved(id, status)
+        }
+    }
+
+    private val permissionNotificationDismissedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val id = intent?.getStringExtra(LocalHttpServer.EXTRA_PERMISSION_ID) ?: return
+            onPermissionNotificationDismissed(id)
         }
     }
 
@@ -213,8 +237,20 @@ class AgentService : LifecycleService() {
                 IntentFilter(LocalHttpServer.ACTION_PERMISSION_PROMPT),
                 Context.RECEIVER_NOT_EXPORTED
             )
+            registerReceiver(
+                permissionResolvedReceiver,
+                IntentFilter(LocalHttpServer.ACTION_PERMISSION_RESOLVED),
+                Context.RECEIVER_NOT_EXPORTED
+            )
+            registerReceiver(
+                permissionNotificationDismissedReceiver,
+                IntentFilter(ACTION_PERMISSION_NOTIFICATION_DISMISSED),
+                Context.RECEIVER_NOT_EXPORTED
+            )
         } else {
             registerReceiver(permissionPromptReceiver, IntentFilter(LocalHttpServer.ACTION_PERMISSION_PROMPT))
+            registerReceiver(permissionResolvedReceiver, IntentFilter(LocalHttpServer.ACTION_PERMISSION_RESOLVED))
+            registerReceiver(permissionNotificationDismissedReceiver, IntentFilter(ACTION_PERMISSION_NOTIFICATION_DISMISSED))
         }
     }
 
@@ -225,9 +261,97 @@ class AgentService : LifecycleService() {
             unregisterReceiver(permissionPromptReceiver)
         } catch (_: Exception) {
         }
+        try {
+            unregisterReceiver(permissionResolvedReceiver)
+        } catch (_: Exception) {
+        }
+        try {
+            unregisterReceiver(permissionNotificationDismissedReceiver)
+        } catch (_: Exception) {
+        }
     }
 
-    private fun showPermissionNotification(id: String, tool: String, detail: String) {
+    private fun enqueuePermissionPrompt(prompt: PermissionPrompt) {
+        synchronized(permissionNotifLock) {
+            val id = prompt.id.trim()
+            if (id.isBlank()) return
+
+            // Avoid duplicates.
+            if (activePermissionPrompt?.id == id) {
+                // Update the active notification (e.g. detail changes or more queued).
+                showActivePermissionNotificationLocked()
+                return
+            }
+            if (permissionPromptQueue.any { it.id == id }) {
+                showActivePermissionNotificationLocked()
+                return
+            }
+            permissionPromptQueue.addLast(prompt)
+            if (activePermissionPrompt == null) {
+                showNextPermissionNotificationLocked()
+            } else {
+                // Merge: keep one visible notification, but show "+N more".
+                showActivePermissionNotificationLocked()
+            }
+        }
+    }
+
+    private fun onPermissionResolved(id: String, status: String) {
+        synchronized(permissionNotifLock) {
+            // Drop from queue.
+            if (permissionPromptQueue.isNotEmpty()) {
+                val it = permissionPromptQueue.iterator()
+                while (it.hasNext()) {
+                    if (it.next().id == id) {
+                        it.remove()
+                        break
+                    }
+                }
+            }
+            val active = activePermissionPrompt
+            if (active != null && active.id == id) {
+                activePermissionPrompt = null
+                cancelPermissionNotification()
+                showNextPermissionNotificationLocked()
+            } else {
+                // Still update the visible notification to reflect new queue size.
+                showActivePermissionNotificationLocked()
+            }
+        }
+    }
+
+    private fun onPermissionNotificationDismissed(id: String) {
+        synchronized(permissionNotifLock) {
+            val active = activePermissionPrompt ?: return
+            if (active.id != id) return
+            // Requeue the dismissed prompt so it isn't lost.
+            activePermissionPrompt = null
+            permissionPromptQueue.addLast(active)
+            cancelPermissionNotification()
+            showNextPermissionNotificationLocked()
+        }
+    }
+
+    private fun cancelPermissionNotification() {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.cancel(PERMISSION_NOTIFICATION_ID)
+    }
+
+    private fun showNextPermissionNotificationLocked() {
+        if (activePermissionPrompt != null) return
+        val next = if (permissionPromptQueue.isEmpty()) null else permissionPromptQueue.removeFirst()
+        next ?: return
+        activePermissionPrompt = next
+        showActivePermissionNotificationLocked()
+    }
+
+    private fun showActivePermissionNotificationLocked() {
+        val p = activePermissionPrompt ?: return
+        val more = permissionPromptQueue.size
+        showPermissionNotification(p, moreQueued = more)
+    }
+
+    private fun showPermissionNotification(prompt: PermissionPrompt, moreQueued: Int) {
         val channelId = "permission_prompts"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -241,31 +365,44 @@ class AgentService : LifecycleService() {
 
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra(LocalHttpServer.EXTRA_PERMISSION_ID, id)
-            putExtra(LocalHttpServer.EXTRA_PERMISSION_TOOL, tool)
-            putExtra(LocalHttpServer.EXTRA_PERMISSION_DETAIL, detail)
+            putExtra(LocalHttpServer.EXTRA_PERMISSION_ID, prompt.id)
+            putExtra(LocalHttpServer.EXTRA_PERMISSION_TOOL, prompt.tool)
+            putExtra(LocalHttpServer.EXTRA_PERMISSION_DETAIL, prompt.detail)
         }
         val openPi = PendingIntent.getActivity(
             this,
-            id.hashCode(),
+            prompt.id.hashCode(),
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val text = if (detail.isBlank()) tool else "$tool: $detail"
+        val base = if (prompt.detail.isBlank()) prompt.tool else "${prompt.tool}: ${prompt.detail}"
+        val text = if (moreQueued > 0) base + "  (+" + moreQueued + " more)" else base
+
+        val dismissedIntent = Intent(ACTION_PERMISSION_NOTIFICATION_DISMISSED).apply {
+            setPackage(packageName)
+            putExtra(LocalHttpServer.EXTRA_PERMISSION_ID, prompt.id)
+        }
+        val dismissedPi = PendingIntent.getBroadcast(
+            this,
+            prompt.id.hashCode(),
+            dismissedIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val notif = NotificationCompat.Builder(this, channelId)
             .setContentTitle("Permission required")
             .setContentText(text.take(120))
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setContentIntent(openPi)
+            .setDeleteIntent(dismissedPi)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
 
         val nm = getSystemService(NotificationManager::class.java)
-        val notifId = 200000 + ((id.hashCode() and 0x7FFFFFFF) % 99999)
-        nm.notify(notifId, notif)
+        nm.notify(PERMISSION_NOTIFICATION_ID, notif)
     }
 
     private fun buildNotification(): Notification {
@@ -407,6 +544,9 @@ class AgentService : LifecycleService() {
 
     companion object {
         private const val NOTIFICATION_ID = 1001
+        private const val PERMISSION_NOTIFICATION_ID = 200201
+        private const val ACTION_PERMISSION_NOTIFICATION_DISMISSED =
+            "jp.espresso3389.kugutz.action.PERMISSION_NOTIFICATION_DISMISSED"
         const val ACTION_START_PYTHON = "jp.espresso3389.kugutz.action.START_PYTHON"
         const val ACTION_RESTART_PYTHON = "jp.espresso3389.kugutz.action.RESTART_PYTHON"
         const val ACTION_STOP_PYTHON = "jp.espresso3389.kugutz.action.STOP_PYTHON"

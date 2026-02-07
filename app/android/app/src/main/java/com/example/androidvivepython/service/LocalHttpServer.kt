@@ -313,6 +313,8 @@ class LocalHttpServer(
                         if (status == "approved") {
                             maybeGrantDeviceCapability(updated)
                         }
+                        // Notify the foreground service so it can advance queued permission notifications.
+                        sendPermissionResolved(updated.id, updated.status)
                         jsonResponse(
                             JSONObject()
                                 .put("id", updated.id)
@@ -3770,6 +3772,14 @@ class LocalHttpServer(
         context.sendBroadcast(intent)
     }
 
+    private fun sendPermissionResolved(id: String, status: String) {
+        val intent = android.content.Intent(ACTION_PERMISSION_RESOLVED)
+        intent.setPackage(context.packageName)
+        intent.putExtra(EXTRA_PERMISSION_ID, id)
+        intent.putExtra(EXTRA_PERMISSION_STATUS, status)
+        context.sendBroadcast(intent)
+    }
+
     private fun maybeGrantDeviceCapability(req: jp.espresso3389.kugutz.perm.PermissionStore.PermissionRequest) {
         val tool = req.tool
         if (!tool.startsWith("device.")) {
@@ -3822,9 +3832,11 @@ Policies:
 ## Current Memory
 """
         const val ACTION_PERMISSION_PROMPT = "jp.espresso3389.kugutz.action.PERMISSION_PROMPT"
+        const val ACTION_PERMISSION_RESOLVED = "jp.espresso3389.kugutz.action.PERMISSION_RESOLVED"
         const val EXTRA_PERMISSION_ID = "permission_id"
         const val EXTRA_PERMISSION_TOOL = "permission_tool"
         const val EXTRA_PERMISSION_DETAIL = "permission_detail"
         const val EXTRA_PERMISSION_BIOMETRIC = "permission_biometric"
+        const val EXTRA_PERMISSION_STATUS = "permission_status"
     }
 }

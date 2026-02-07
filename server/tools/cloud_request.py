@@ -1,6 +1,5 @@
 import json
 import os
-import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict
@@ -49,21 +48,6 @@ class CloudRequestTool:
         except Exception as e:
             return {"status": "error", "error": "request_failed", "detail": str(e)}
 
-    def _wait_for_permission(self, permission_id: str, timeout_s: float = 45.0) -> str:
-        pid = str(permission_id or "").strip()
-        if not pid:
-            return "invalid"
-        deadline = time.time() + max(1.0, float(timeout_s or 45.0))
-        while time.time() < deadline:
-            resp = self._request_json("GET", f"/permissions/{pid}", None)
-            body = resp.get("body") if isinstance(resp, dict) else None
-            if isinstance(body, dict):
-                st = str(body.get("status") or "").strip()
-                if st in {"approved", "denied", "used"}:
-                    return st
-            time.sleep(0.8)
-        return "timeout"
-
     def run(self, args: Dict[str, Any]) -> Dict[str, Any]:
         identity = str(args.get("identity") or args.get("session_id") or "").strip()
         if identity:
@@ -91,19 +75,8 @@ class CloudRequestTool:
         body = r.get("body")
 
         if http_status == 403 and isinstance(body, dict) and body.get("status") == "permission_required":
-            req_obj = body.get("request") if isinstance(body.get("request"), dict) else {}
-            pid = str(req_obj.get("id") or "").strip()
-            if not pid:
-                return {"status": "error", "error": "permission_required", "detail": "missing permission id"}
-            wait = self._wait_for_permission(pid, timeout_s=45.0)
-            if wait == "approved":
-                r2 = do(pid)
-                if r2.get("status") != "ok":
-                    return r2
-                return r2.get("body") if isinstance(r2.get("body"), dict) else {"status": "error", "error": "invalid_response"}
-            if wait == "denied":
-                return {"status": "error", "error": "permission_denied"}
-            return {"status": "error", "error": "permission_timeout"}
+            # Don't block waiting for user approval inside the tool call; return immediately so the
+            # agent can ask the user to approve and then retry.
+            return body
 
         return body if isinstance(body, dict) else {"status": "error", "error": "invalid_response"}
-

@@ -69,6 +69,16 @@ class DeviceApiTool:
         self._identity = (os.environ.get("KUGUTZ_IDENTITY") or os.environ.get("KUGUTZ_SESSION_ID") or "").strip() or "default"
         # Cache approvals (in-memory). Kotlin also reuses approvals server-side by identity/capability.
         self._permission_ids: Dict[str, str] = {}
+        # Conservative defaults: a few device actions can legitimately take longer than the tool runner
+        # or urllib's default timeout.
+        self._action_timeout_s: Dict[str, float] = {
+            "camera.capture": 45.0,
+            "camera.preview.start": 25.0,
+            "camera.preview.stop": 25.0,
+            "vision.run": 75.0,
+            "usb.stream.start": 25.0,
+            "usb.stream.stop": 25.0,
+        }
 
     def set_identity(self, identity: str) -> None:
         self._identity = str(identity or "").strip() or "default"
@@ -130,8 +140,20 @@ class DeviceApiTool:
             if spec["method"] == "POST" and isinstance(payload, dict) and "permission_id" not in payload:
                 payload["permission_id"] = pid
 
+        # Allow callers to override timeout per action.
+        timeout_s = args.get("timeout_s", None)
+        if timeout_s is None and isinstance(payload, dict):
+            timeout_s = payload.get("timeout_s", None)
+        if timeout_s is None:
+            timeout_s = self._action_timeout_s.get(action, 12.0)
+        try:
+            timeout_s = float(timeout_s)
+        except Exception:
+            timeout_s = 12.0
+        timeout_s = max(3.0, min(timeout_s, 120.0))
+
         body = payload if spec["method"] == "POST" else None
-        return self._request_json(spec["method"], spec["path"], body)
+        return self._request_json(spec["method"], spec["path"], body, timeout_s=timeout_s)
 
     def _run_uvc_action(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -377,12 +399,10 @@ class DeviceApiTool:
             self._permission_ids[cache_key] = pid
             if self._is_approved(pid):
                 return pid, req
-            # Wait briefly for approval to avoid "permission hell" during agent loops.
-            status = self._wait_for_permission(pid, timeout_s=float(os.environ.get("KUGUTZ_PERMISSION_TIMEOUT_S", "45") or "45"))
-            if status == "approved":
-                return pid, {"id": pid, "status": "approved"}
-            if status == "denied":
-                return "", {"id": pid, "status": "denied", "tool": tool, "detail": detail, "scope": scope, "capability": capability}
+            # Don't block waiting for user approval inside the tool call; return immediately so the
+            # agent can ask the user to approve and then retry.
+            st = str(req.get("status") or "").strip() or "pending"
+            return "", {"id": pid, "status": st, "tool": tool, "detail": detail, "scope": scope, "capability": capability}
         return "", req
 
     def _is_approved(self, permission_id: str) -> bool:
@@ -413,7 +433,7 @@ class DeviceApiTool:
         body = resp.get("body")
         return body if isinstance(body, dict) else {"status": "error", "error": "invalid_permission_response"}
 
-    def _request_json(self, method: str, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _request_json(self, method: str, path: str, body: Optional[Dict[str, Any]] = None, *, timeout_s: float = 12.0) -> Dict[str, Any]:
         data = None
         headers = {"Accept": "application/json"}
         if body is not None:
@@ -423,7 +443,7 @@ class DeviceApiTool:
             headers["X-Kugutz-Identity"] = self._identity
         req = urllib.request.Request(self.base_url + path, data=data, method=method, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=12) as resp:
+            with urllib.request.urlopen(req, timeout=float(timeout_s)) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 parsed = json.loads(raw) if raw else {}
                 return {"status": "ok", "http_status": int(resp.status), "body": parsed}

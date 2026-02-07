@@ -3038,8 +3038,17 @@ class LocalHttpServer(
             headersOut.put(k, expandTemplateString(v, exp))
         }
 
-        val jsonBody = payload.opt("json")
-        val bodyStr = payload.optString("body", "")
+        // Request body supports:
+        // - json: any JSON value (object/array/string/number/bool/null)
+        // - body: string (raw body) OR JSON object/array (treated like json)
+        val jsonBodyFromJson = payload.opt("json")
+        val rawBodyAny = payload.opt("body")
+        val jsonBody = when {
+            jsonBodyFromJson != null && jsonBodyFromJson != JSONObject.NULL -> jsonBodyFromJson
+            rawBodyAny is JSONObject || rawBodyAny is org.json.JSONArray -> rawBodyAny
+            else -> null
+        }
+        val bodyStr = if (rawBodyAny is String) rawBodyAny else ""
         val bodyB64 = payload.optString("body_base64", "")
 
         var outBytes: ByteArray? = null

@@ -133,6 +133,11 @@ Template placeholders (expanded server-side, never echoed back):
 - `${file:<rel_path>:base64}`: base64 of a user-root file (e.g. `captures/latest.jpg`)
 - `${file:<rel_path>:text}`: UTF-8 decode of a user-root file
 
+Body forms:
+- `json`: any JSON value (object/array/string/number/bool/null) that will be JSON-encoded
+- `body`: either a raw string body, or a JSON object/array (treated like `json`)
+- `body_base64`: raw bytes as base64 (use with `content_type`)
+
 ### OpenAI Vision Example (Responses API)
 
 This uses the Brain config (model + base_url + api_key) and uploads a local image via a data URL:

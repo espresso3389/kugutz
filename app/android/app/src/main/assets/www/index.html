@@ -578,10 +578,7 @@
         try {
           $("brainApiKey").disabled = locked;
           $("braveSearchApiKey").disabled = locked;
-          $("brainSave").disabled = locked;
-          $("braveSearchSave").disabled = locked;
-          $("braveSearchClear").disabled = locked;
-          $("braveSearchCheck").disabled = locked;
+          // Keep action buttons enabled so a tap can trigger biometric unlock on-demand.
         } catch (_) {}
       }
 
@@ -651,6 +648,17 @@
         if (typeof loadMemory === "function") loadMemory();
         if (typeof checkBraveSearchKey === "function") checkBraveSearchKey();
         if (typeof loadBrainConfig === "function") loadBrainConfig();
+      }
+
+      async function ensureSettingsUnlocked() {
+        if (getSettingsUnlockRemainingMs() > 0) return true;
+        const r = await requestSettingsUnlock();
+        if (!r || !r.ok) {
+          showToast("Settings locked", 1600);
+          return false;
+        }
+        refreshSecretsFromBridge();
+        return true;
       }
 
       // ==============================
@@ -975,7 +983,7 @@
       }
 
       $("brainSave").addEventListener("click", async () => {
-        if (getSettingsUnlockRemainingMs() <= 0) { showToast("Unlock Settings first"); return; }
+        if (!(await ensureSettingsUnlocked())) return;
         const preset = getSelectedPreset();
         if (!preset) { showToast("Choose a model first"); return; }
 
@@ -1093,7 +1101,7 @@
 
       $("braveSearchCheck").addEventListener("click", checkBraveSearchKey);
       $("braveSearchSave").addEventListener("click", async () => {
-        if (getSettingsUnlockRemainingMs() <= 0) { showToast("Unlock Settings first"); return; }
+        if (!(await ensureSettingsUnlocked())) return;
         const key = $("braveSearchApiKey").value.trim();
         try {
           // Prefer AndroidBridge to avoid extra consent prompts; Settings is already biometric-unlocked.
@@ -1122,7 +1130,7 @@
       });
 
       $("braveSearchClear").addEventListener("click", async () => {
-        if (getSettingsUnlockRemainingMs() <= 0) { showToast("Unlock Settings first"); return; }
+        if (!(await ensureSettingsUnlocked())) return;
         try {
           // Prefer AndroidBridge to avoid extra consent prompts; Settings is already biometric-unlocked.
           try {

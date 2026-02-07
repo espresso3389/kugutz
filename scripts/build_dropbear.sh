@@ -154,7 +154,9 @@ build_one() {
   popd >/dev/null
 }
 
-ABIS="${ABIS:-arm64-v8a armeabi-v7a x86 x86_64}"
+# Keep the app lean: for now we only support modern Android devices (arm64).
+# Override with ABIS=... if you explicitly need other architectures.
+ABIS="${ABIS:-arm64-v8a}"
 for abi in $ABIS; do
   case "$abi" in
     arm64-v8a)

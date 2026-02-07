@@ -1,4 +1,5 @@
 import contextlib
+import ctypes.util
 import io
 import json
 import os
@@ -35,6 +36,61 @@ if PYENV_DIR.exists():
 
 STORAGE = Storage(DATA_DIR / "app.db")
 TOOL_ROUTER = ToolRouter(DATA_DIR)
+
+
+def _patch_ctypes_find_library():
+    """
+    Make ctypes library resolution reliable under our embedded Python on Android.
+
+    Some Python-for-Android builds ship a `ctypes.util.find_library()` that tries
+    to consult Kivy's `org.kivy.android.PythonActivity`, which Kugutz doesn't use.
+    That can throw a hard JVM exception and break pure-Python packages like `pyusb`.
+
+    Prefer the app's native library directory (exported by Kotlin as
+    `$KUGUTZ_NATIVELIB`) and fall back to the original implementation.
+    """
+
+    orig = ctypes.util.find_library
+
+    def _first_existing(base: str, names: list[str]) -> str | None:
+        try:
+            b = Path(base)
+            for n in names:
+                p = b / n
+                if p.exists():
+                    return str(p)
+        except Exception:
+            return None
+        return None
+
+    def patched(name: str):  # type: ignore[no-untyped-def]
+        nlib = (os.environ.get("KUGUTZ_NATIVELIB") or "").strip()
+        if nlib:
+            candidates: list[str] = []
+            if name:
+                if name.endswith(".so"):
+                    candidates.append(name)
+                candidates.append(f"lib{name}.so")
+
+            # Common names used by ecosystem packages (notably pyusb).
+            if name in {"usb-1.0", "libusb-1.0", "usb", "usb1.0", "libusb"}:
+                candidates.extend(["libusb-1.0.so", "libusb1.0.so", "libusb.so"])
+            if name in {"uvc", "libuvc"}:
+                candidates.append("libuvc.so")
+
+            hit = _first_existing(nlib, candidates)
+            if hit:
+                return hit
+
+        try:
+            return orig(name)
+        except Exception:
+            return None
+
+    ctypes.util.find_library = patched  # type: ignore[assignment]
+
+
+_patch_ctypes_find_library()
 
 
 def _now_ms() -> int:

@@ -20,6 +20,7 @@ import jp.espresso3389.kugutz.service.PythonRuntimeManager
 import jp.espresso3389.kugutz.service.LocalHttpServer
 import jp.espresso3389.kugutz.ui.WebAppBridge
 import jp.espresso3389.kugutz.perm.DevicePermissionPolicy
+import org.kivy.android.PythonActivity
 import java.util.concurrent.atomic.AtomicReference
 
 class MainActivity : AppCompatActivity() {
@@ -51,6 +52,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Compatibility shim: provide a non-Kivy Activity handle for p4a code paths
+        // that look up `org.kivy.android.PythonActivity.mActivity`.
+        PythonActivity.mActivity = this
 
         startForegroundService(Intent(this, AgentService::class.java))
         ensureNotificationPermission()

@@ -19,7 +19,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT_DIR/scripts/kugutzpy.c"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/app/android/app/src/main/jniLibs}"
 API="${ANDROID_API:-21}"
-ABIS="${ABIS:-arm64-v8a armeabi-v7a x86 x86_64}"
+# Keep the app lean: for now we only support modern Android devices (arm64).
+# Override with ABIS=... if you explicitly need other architectures.
+ABIS="${ABIS:-arm64-v8a}"
 
 TOOLCHAIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64"
 if [[ ! -d "$TOOLCHAIN" ]]; then

@@ -24,5 +24,12 @@ for ABI in $ABIS; do
   "$NDK_BUILD" APP_ABI="$ABI"
   popd >/dev/null
   mkdir -p "$JNI_LIBS_DIR/$ABI"
+  # Keep the upstream filename we build, but also provide the common soname(s)
+  # that Python packages like `pyusb` attempt to load via ctypes.
+  # pyusb tries: usb-1.0 / libusb-1.0 / usb  => typically `libusb-1.0.so`.
   cp -a "$SRC_DIR/android/libs/$ABI/libusb1.0.so" "$JNI_LIBS_DIR/$ABI/" || true
+  if [[ -f "$JNI_LIBS_DIR/$ABI/libusb1.0.so" ]]; then
+    cp -a "$JNI_LIBS_DIR/$ABI/libusb1.0.so" "$JNI_LIBS_DIR/$ABI/libusb-1.0.so" || true
+    cp -a "$JNI_LIBS_DIR/$ABI/libusb1.0.so" "$JNI_LIBS_DIR/$ABI/libusb.so" || true
+  fi
 done

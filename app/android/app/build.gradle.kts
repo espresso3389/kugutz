@@ -15,6 +15,12 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+
+        // Target only arm64 for now (Android 14+ devices). This also keeps the
+        // bundled native deps (libusb/libuvc/opencv) consistent and smaller.
+        ndk {
+            abiFilters += setOf("arm64-v8a")
+        }
     }
 
     buildTypes {

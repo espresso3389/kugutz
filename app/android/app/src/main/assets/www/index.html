@@ -651,12 +651,20 @@
 
       async function ensureSettingsUnlocked() {
         if (getSettingsUnlockRemainingMs() > 0) return true;
+        // Preserve any user-edited secret fields across re-auth. Otherwise, if unlock expires
+        // right before tapping Save, we would clobber the typed key by reloading the old value.
+        const brainBefore = $("brainApiKey").value;
+        const braveBefore = $("braveSearchApiKey").value;
         const r = await requestSettingsUnlock();
         if (!r || !r.ok) {
           showToast("Settings locked", 1600);
           return false;
         }
-        refreshSecretsFromBridge();
+        setSettingsUiLocked(false);
+        // Only repopulate from storage if the field is still empty (i.e., user wasn't editing it).
+        if (!brainBefore && !braveBefore) {
+          refreshSecretsFromBridge();
+        }
         return true;
       }
 

@@ -134,6 +134,9 @@ dependencies {
     implementation("org.nanohttpd:nanohttpd-websocket:2.3.1")
     // Small CPU image processing intrinsics (blur, convolution, etc.) without pulling in OpenCV.
     implementation("com.github.android:renderscript-intrinsics-replacement-toolkit:344be3f6bf03fb")
+    // On-device inference runtime. We keep Python for orchestration and use Android-side TFLite for performance.
+    implementation("org.tensorflow:tensorflow-lite:2.17.0")
+    implementation("org.tensorflow:tensorflow-lite-gpu:2.17.0")
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     kapt("androidx.room:room-compiler:2.6.1")

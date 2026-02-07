@@ -29,6 +29,14 @@ class DeviceApiTool:
         "usb.stream.start": {"method": "POST", "path": "/usb/stream/start", "permission": True},
         "usb.stream.stop": {"method": "POST", "path": "/usb/stream/stop", "permission": True},
         "usb.stream.status": {"method": "GET", "path": "/usb/stream/status", "permission": True},
+        "vision.model.load": {"method": "POST", "path": "/vision/model/load", "permission": True},
+        "vision.model.unload": {"method": "POST", "path": "/vision/model/unload", "permission": True},
+        "vision.frame.put": {"method": "POST", "path": "/vision/frame/put", "permission": True},
+        "vision.frame.get": {"method": "POST", "path": "/vision/frame/get", "permission": True},
+        "vision.frame.delete": {"method": "POST", "path": "/vision/frame/delete", "permission": True},
+        "vision.frame.save": {"method": "POST", "path": "/vision/frame/save", "permission": True},
+        "vision.image.load": {"method": "POST", "path": "/vision/image/load", "permission": True},
+        "vision.run": {"method": "POST", "path": "/vision/run", "permission": True},
         "shell.exec": {"method": "POST", "path": "/shell/exec", "permission": True},
         "brain.memory.get": {"method": "GET", "path": "/brain/memory", "permission": False},
         "brain.memory.set": {"method": "POST", "path": "/brain/memory", "permission": True},
@@ -320,6 +328,8 @@ class DeviceApiTool:
             return "ssh_pin", "ssh.pin", "session"
         if a.startswith("usb."):
             return "device.usb", "usb", "session"
+        if a.startswith("vision."):
+            return "device.vision", "vision", "session"
         # Default to session scope: approve once per chat session, then no repeated prompts.
         return "device_api", "device_api", "session"
 

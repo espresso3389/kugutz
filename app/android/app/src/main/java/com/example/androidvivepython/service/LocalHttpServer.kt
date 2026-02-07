@@ -31,6 +31,9 @@ import jp.espresso3389.kugutz.perm.SshKeyStore
 import jp.espresso3389.kugutz.perm.SshKeyPolicy
 import jp.espresso3389.kugutz.perm.InstallIdentity
 import jp.espresso3389.kugutz.perm.PermissionPrefs
+import jp.espresso3389.kugutz.vision.VisionFrameStore
+import jp.espresso3389.kugutz.vision.VisionImageIo
+import jp.espresso3389.kugutz.vision.TfliteModelManager
 
 class LocalHttpServer(
     private val context: Context,
@@ -58,6 +61,8 @@ class LocalHttpServer(
     }
 
     private val USB_PERMISSION_ACTION = "jp.espresso3389.kugutz.USB_PERMISSION"
+    private val visionFrames = VisionFrameStore()
+    private val tflite = TfliteModelManager(context)
 
     fun startServer(): Boolean {
         return try {
@@ -570,6 +575,78 @@ class LocalHttpServer(
             }
             (uri == "/usb/stream/status" || uri == "/usb/stream/status/") && session.method == Method.GET -> {
                 return handleUsbStreamStatus()
+            }
+            (uri == "/vision/model/load" || uri == "/vision/model/load/") && session.method == Method.POST -> {
+                return try {
+                    val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                    handleVisionModelLoad(payload)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "vision model/load handler failed", ex)
+                    jsonError(Response.Status.INTERNAL_ERROR, "vision_model_load_failed")
+                }
+            }
+            (uri == "/vision/model/unload" || uri == "/vision/model/unload/") && session.method == Method.POST -> {
+                return try {
+                    val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                    handleVisionModelUnload(payload)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "vision model/unload handler failed", ex)
+                    jsonError(Response.Status.INTERNAL_ERROR, "vision_model_unload_failed")
+                }
+            }
+            (uri == "/vision/frame/put" || uri == "/vision/frame/put/") && session.method == Method.POST -> {
+                return try {
+                    val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                    handleVisionFramePut(payload)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "vision frame/put handler failed", ex)
+                    jsonError(Response.Status.INTERNAL_ERROR, "vision_frame_put_failed")
+                }
+            }
+            (uri == "/vision/frame/get" || uri == "/vision/frame/get/") && session.method == Method.POST -> {
+                return try {
+                    val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                    handleVisionFrameGet(payload)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "vision frame/get handler failed", ex)
+                    jsonError(Response.Status.INTERNAL_ERROR, "vision_frame_get_failed")
+                }
+            }
+            (uri == "/vision/frame/delete" || uri == "/vision/frame/delete/") && session.method == Method.POST -> {
+                return try {
+                    val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                    handleVisionFrameDelete(payload)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "vision frame/delete handler failed", ex)
+                    jsonError(Response.Status.INTERNAL_ERROR, "vision_frame_delete_failed")
+                }
+            }
+            (uri == "/vision/frame/save" || uri == "/vision/frame/save/") && session.method == Method.POST -> {
+                return try {
+                    val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                    handleVisionFrameSave(payload)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "vision frame/save handler failed", ex)
+                    jsonError(Response.Status.INTERNAL_ERROR, "vision_frame_save_failed")
+                }
+            }
+            (uri == "/vision/image/load" || uri == "/vision/image/load/") && session.method == Method.POST -> {
+                return try {
+                    val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                    handleVisionImageLoad(payload)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "vision image/load handler failed", ex)
+                    jsonError(Response.Status.INTERNAL_ERROR, "vision_image_load_failed")
+                }
+            }
+            (uri == "/vision/run" || uri == "/vision/run/") && session.method == Method.POST -> {
+                return try {
+                    val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                    handleVisionRun(payload)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "vision run handler failed", ex)
+                    jsonError(Response.Status.INTERNAL_ERROR, "vision_run_failed")
+                }
             }
             uri == "/ssh/status" -> {
                 val status = sshdManager.status()
@@ -1361,6 +1438,168 @@ class LocalHttpServer(
             override fun onException(exception: java.io.IOException?) {
                 usbStreams[streamId]?.wsClients?.remove(this)
             }
+        }
+    }
+
+    private fun ensureVisionPermission(payload: JSONObject): Boolean {
+        val pid = payload.optString("permission_id", "")
+        return isPermissionApproved(pid, consume = true)
+    }
+
+    private fun userPath(relative: String): File? {
+        val root = File(context.filesDir, "user")
+        val rel = relative.trim().trimStart('/')
+        if (rel.isBlank()) return null
+        return try {
+            val out = File(root, rel).canonicalFile
+            if (out.path.startsWith(root.canonicalPath + File.separator)) out else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun handleVisionModelLoad(payload: JSONObject): Response {
+        if (!ensureVisionPermission(payload)) return forbidden("permission_required")
+        val name = payload.optString("name", "").trim()
+        val path = payload.optString("path", "").trim()
+        if (name.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "name_required")
+        if (path.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "path_required")
+        val file = userPath(path) ?: return jsonError(Response.Status.BAD_REQUEST, "path_outside_user_dir")
+        val delegate = payload.optString("delegate", "none")
+        val threads = payload.optInt("num_threads", 2)
+        return try {
+            val info = tflite.load(name, file, delegate, threads)
+            jsonResponse(JSONObject(info))
+        } catch (ex: Exception) {
+            jsonError(Response.Status.BAD_REQUEST, "model_load_failed", JSONObject().put("detail", ex.message ?: ""))
+        }
+    }
+
+    private fun handleVisionModelUnload(payload: JSONObject): Response {
+        if (!ensureVisionPermission(payload)) return forbidden("permission_required")
+        val name = payload.optString("name", "").trim()
+        if (name.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "name_required")
+        val ok = tflite.unload(name)
+        return jsonResponse(JSONObject().put("status", "ok").put("unloaded", ok))
+    }
+
+    private fun handleVisionFramePut(payload: JSONObject): Response {
+        if (!ensureVisionPermission(payload)) return forbidden("permission_required")
+        val w = payload.optInt("width", 0)
+        val h = payload.optInt("height", 0)
+        val b64 = payload.optString("rgba_b64", "")
+        if (w <= 0 || h <= 0) return jsonError(Response.Status.BAD_REQUEST, "invalid_size")
+        if (b64.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "rgba_b64_required")
+        return try {
+            val frame = VisionImageIo.decodeRgbaB64(w, h, b64)
+            val id = visionFrames.put(frame)
+            jsonResponse(JSONObject().put("status", "ok").put("frame_id", id).put("stats", JSONObject(visionFrames.stats())))
+        } catch (ex: Exception) {
+            jsonError(Response.Status.BAD_REQUEST, "frame_put_failed", JSONObject().put("detail", ex.message ?: ""))
+        }
+    }
+
+    private fun handleVisionFrameGet(payload: JSONObject): Response {
+        if (!ensureVisionPermission(payload)) return forbidden("permission_required")
+        val id = payload.optString("frame_id", "").trim()
+        if (id.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "frame_id_required")
+        val frame = visionFrames.get(id) ?: return jsonError(Response.Status.NOT_FOUND, "frame_not_found")
+        return jsonResponse(
+            JSONObject()
+                .put("status", "ok")
+                .put("frame_id", id)
+                .put("width", frame.width)
+                .put("height", frame.height)
+                .put("rgba_b64", VisionImageIo.encodeRgbaB64(frame))
+        )
+    }
+
+    private fun handleVisionFrameDelete(payload: JSONObject): Response {
+        if (!ensureVisionPermission(payload)) return forbidden("permission_required")
+        val id = payload.optString("frame_id", "").trim()
+        if (id.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "frame_id_required")
+        val ok = visionFrames.delete(id)
+        return jsonResponse(JSONObject().put("status", "ok").put("deleted", ok).put("stats", JSONObject(visionFrames.stats())))
+    }
+
+    private fun handleVisionImageLoad(payload: JSONObject): Response {
+        if (!ensureVisionPermission(payload)) return forbidden("permission_required")
+        val path = payload.optString("path", "").trim()
+        if (path.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "path_required")
+        val file = userPath(path) ?: return jsonError(Response.Status.BAD_REQUEST, "path_outside_user_dir")
+        return try {
+            val frame = VisionImageIo.decodeFileToRgba(file)
+            val id = visionFrames.put(frame)
+            jsonResponse(
+                JSONObject()
+                    .put("status", "ok")
+                    .put("frame_id", id)
+                    .put("width", frame.width)
+                    .put("height", frame.height)
+                    .put("stats", JSONObject(visionFrames.stats()))
+            )
+        } catch (ex: Exception) {
+            jsonError(Response.Status.BAD_REQUEST, "image_load_failed", JSONObject().put("detail", ex.message ?: ""))
+        }
+    }
+
+    private fun handleVisionFrameSave(payload: JSONObject): Response {
+        if (!ensureVisionPermission(payload)) return forbidden("permission_required")
+        val id = payload.optString("frame_id", "").trim()
+        val outPath = payload.optString("path", "").trim()
+        val format = payload.optString("format", "jpg")
+        val jpegQuality = payload.optInt("jpeg_quality", 90)
+        if (id.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "frame_id_required")
+        if (outPath.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "path_required")
+        val frame = visionFrames.get(id) ?: return jsonError(Response.Status.NOT_FOUND, "frame_not_found")
+        val outFile = userPath(outPath) ?: return jsonError(Response.Status.BAD_REQUEST, "path_outside_user_dir")
+        return try {
+            VisionImageIo.encodeRgbaToFile(frame, format, outFile, jpegQuality)
+            jsonResponse(JSONObject().put("status", "ok").put("saved", true).put("path", outFile.absolutePath))
+        } catch (ex: Exception) {
+            jsonError(Response.Status.BAD_REQUEST, "frame_save_failed", JSONObject().put("detail", ex.message ?: ""))
+        }
+    }
+
+    private fun handleVisionRun(payload: JSONObject): Response {
+        if (!ensureVisionPermission(payload)) return forbidden("permission_required")
+        val model = payload.optString("model", "").trim()
+        if (model.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "model_required")
+
+        val frameId = payload.optString("frame_id", "").trim()
+        val frame = if (frameId.isNotBlank()) {
+            visionFrames.get(frameId)
+        } else {
+            val w = payload.optInt("width", 0)
+            val h = payload.optInt("height", 0)
+            val b64 = payload.optString("rgba_b64", "")
+            if (w <= 0 || h <= 0 || b64.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "frame_id_or_rgba_required")
+            try {
+                VisionImageIo.decodeRgbaB64(w, h, b64)
+            } catch (ex: Exception) {
+                return jsonError(Response.Status.BAD_REQUEST, "invalid_rgba", JSONObject().put("detail", ex.message ?: ""))
+            }
+        } ?: return jsonError(Response.Status.NOT_FOUND, "frame_not_found")
+
+        val normalize = payload.optBoolean("normalize", true)
+        val meanArr = payload.optJSONArray("mean")
+        val stdArr = payload.optJSONArray("std")
+        fun floatArr3(a: org.json.JSONArray?, fallback: FloatArray): FloatArray {
+            if (a == null || a.length() < 3) return fallback
+            return floatArrayOf(
+                (a.optDouble(0, fallback[0].toDouble())).toFloat(),
+                (a.optDouble(1, fallback[1].toDouble())).toFloat(),
+                (a.optDouble(2, fallback[2].toDouble())).toFloat(),
+            )
+        }
+        val mean = floatArr3(meanArr, floatArrayOf(0f, 0f, 0f))
+        val std = floatArr3(stdArr, floatArrayOf(1f, 1f, 1f))
+
+        return try {
+            val result = tflite.runRgba(model, frame.rgba, frame.width, frame.height, normalize, mean, std)
+            jsonResponse(JSONObject(result))
+        } catch (ex: Exception) {
+            jsonError(Response.Status.BAD_REQUEST, "vision_run_failed", JSONObject().put("detail", ex.message ?: ""))
         }
     }
 

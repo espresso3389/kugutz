@@ -132,6 +132,8 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("org.nanohttpd:nanohttpd:2.3.1")
     implementation("org.nanohttpd:nanohttpd-websocket:2.3.1")
+    // Small CPU image processing intrinsics (blur, convolution, etc.) without pulling in OpenCV.
+    implementation("com.github.android:renderscript-intrinsics-replacement-toolkit:344be3f6bf03fb")
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     kapt("androidx.room:room-compiler:2.6.1")

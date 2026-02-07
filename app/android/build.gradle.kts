@@ -7,5 +7,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // RenderScript Toolkit is distributed via JitPack (AOSP mirror build).
+        maven { url = uri("https://jitpack.io") }
     }
 }

@@ -66,3 +66,12 @@ dp.ensure_device("camera2", detail="capture a photo", scope="session")
 - `permission_required`: user needs to approve on device UI, then retry.
 - `path_outside_user_dir`: use paths under the user root only.
 - `command_not_allowed`: only `python|pip|curl` are permitted in execution tools.
+
+## Package Name Gotchas (UVC / USB)
+
+When dealing with USB Video Class (UVC) cameras:
+- Native library: `libuvc.so` (bundled by the app in `jniLibs/`)
+- Common Python distribution name: `pupil-labs-uvc`
+- Python import/module name: `pyuvc`
+
+Do not `pip install uvc` for camera control; that name is often unrelated.

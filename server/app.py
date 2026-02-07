@@ -441,6 +441,22 @@ def _shell_exec_impl(cmd: str, raw_args: str, cwd: str) -> Dict:
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
         try:
             if cmd == "pip":
+                # Heuristic guardrail:
+                # People (and LLM agents) often confuse the UVC camera bindings package name.
+                # - The widely used distribution name is `pupil-labs-uvc` (import name: `pyuvc`).
+                # - A different/unrelated package name `uvc` exists in some ecosystems.
+                # If the user asks for both `uvc` and `pyuvc`/`pupil-labs-uvc` in one install,
+                # treat `uvc` as a likely mistake to avoid hard failures on Android/offline.
+                if args and args[0] == "install":
+                    has_pyuvc = any(a == "pyuvc" for a in args)
+                    has_pupil = any(a == "pupil-labs-uvc" for a in args)
+                    if (has_pyuvc or has_pupil) and any(a == "uvc" for a in args):
+                        args = [a for a in args if a != "uvc"]
+                        print(
+                            "note: dropped `uvc` from pip install args (likely confusion). "
+                            "For UVC camera bindings use `pupil-labs-uvc` (import: `pyuvc`)."
+                        )
+
                 # Avoid attempting source builds on-device by default (no compiler toolchain).
                 # Users can override by explicitly passing --no-binary/--only-binary themselves.
                 if args and args[0] == "install":

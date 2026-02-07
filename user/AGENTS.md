@@ -28,6 +28,14 @@ This file documents how the on-device AI agent should operate. It is referenced 
   - `capability` is the device capability, like `camera2`, `mic`, `gps`, `ble.scan`, `usb`, `libuvc`, `libusb`.
 - When the user approves `device.<capability>`, the app records a temporary grant for that `(identity, capability)` pair (scope/TTL depends on the request).
 
+## UVC Naming
+
+- UVC native lib: `libuvc.so` (bundled by app)
+- Python package to install (common): `pupil-labs-uvc`
+- Python import name: `pyuvc`
+
+Avoid `pip install uvc` when you mean camera UVC control.
+
 Practical flow:
 
 1. A device call fails with `permission_required`.

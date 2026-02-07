@@ -19,6 +19,10 @@ includes TFLite and that models live under `files/user/models/`.
 Use Python ffi to `libusb` / `libuvc` directly. Android requires a USB device
 permission grant before device access will work.
 
+Package naming reminder:
+- Install: `pupil-labs-uvc` (distribution name)
+- Import: `pyuvc`
+
 ### Android TTS
 **Endpoint:** `POST /builtins/tts`  
 **Python:** `builtins.tts(text, voice=None)`  

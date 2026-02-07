@@ -6,6 +6,7 @@ This file documents how the on-device AI agent should operate. It is referenced 
 
 - If you need to change device state, access hardware, or touch files, you MUST use tools. Do not pretend.
 - If a tool returns `permission_required` or `permission_expired`, tell the user to approve in the app UI, then retry.
+- Treat `AGENTS.md` and `TOOLS.md` as session policy docs: read once per session and reuse that knowledge without repeatedly re-reading. If either file is updated externally (content/mtime changes), re-read and follow the latest rules.
 - If you are unsure how to proceed, use `web_search` to research and then continue.
 - Keep responses concise and include relevant snippets from tool output when helpful.
 

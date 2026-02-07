@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -45,8 +46,82 @@ class BrainRuntime:
         self._capability_permissions: Dict[str, str] = {}
         # Used to tag Kotlin permission requests so approvals can be reused per chat session.
         self._active_identity: str = ""
+        # Cache user-root policy docs; re-read when file changes on disk (mtime/size).
+        self._user_root_doc_cache: Dict[str, Dict[str, Any]] = {}
 
         self._config = self._load_config()
+
+    def _read_user_root_doc(self, name: str, *, max_chars: int = 20000) -> Dict[str, Any]:
+        """
+        Read and cache a user-root doc (AGENTS.md/TOOLS.md). If the file changes on disk (mtime/size),
+        re-read and update the cache.
+        """
+        filename = str(name or "").strip()
+        if not filename:
+            return {"exists": False, "mtime_ns": 0, "size": 0, "sha256": "", "content": "", "sig": (0, 0)}
+
+        path = (self._user_dir / filename).resolve()
+        if not str(path).startswith(str(self._user_dir.resolve())):
+            return {"exists": False, "mtime_ns": 0, "size": 0, "sha256": "", "content": "", "sig": (0, 0)}
+
+        try:
+            st = path.stat()
+        except Exception:
+            cached = self._user_root_doc_cache.get(filename)
+            return cached or {"exists": False, "mtime_ns": 0, "size": 0, "sha256": "", "content": "", "sig": (0, 0)}
+
+        mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
+        size = int(st.st_size)
+        sig = (mtime_ns, size)
+        cached = self._user_root_doc_cache.get(filename)
+        if cached and cached.get("sig") == sig:
+            return cached
+
+        try:
+            raw = path.read_bytes()
+        except Exception:
+            # Keep previous cached content if any.
+            return cached or {"exists": True, "mtime_ns": mtime_ns, "size": size, "sha256": "", "content": "", "sig": sig}
+
+        sha256 = hashlib.sha256(raw).hexdigest()
+        text = raw.decode("utf-8", errors="replace")
+        if max_chars > 0 and len(text) > max_chars:
+            text = text[:max_chars] + "\n\n...(truncated)...\n"
+
+        entry = {
+            "exists": True,
+            "mtime_ns": mtime_ns,
+            "size": size,
+            "sha256": sha256,
+            "content": text,
+            "sig": sig,
+        }
+        self._user_root_doc_cache[filename] = entry
+        return entry
+
+    def _user_root_policy_blob(self) -> str:
+        """
+        System-prompt appendix containing user-root policy docs.
+        These are injected automatically and reloaded if updated on disk.
+        """
+        agents = self._read_user_root_doc("AGENTS.md")
+        tools = self._read_user_root_doc("TOOLS.md")
+
+        parts: List[str] = []
+        parts.append(
+            "User-root docs (auto-injected; reloaded if changed on disk).\n"
+            "Do NOT call filesystem tools to read `AGENTS.md`/`TOOLS.md` unless the user explicitly asks.\n"
+        )
+        for name, doc in (("AGENTS.md", agents), ("TOOLS.md", tools)):
+            if not doc.get("exists"):
+                parts.append(f"## {name}\n(not found)\n")
+                continue
+            parts.append(
+                f"## {name} (mtime_ns={doc.get('mtime_ns')}, size={doc.get('size')}, sha256={doc.get('sha256')})\n"
+                + str(doc.get("content") or "").rstrip()
+                + "\n"
+            )
+        return "\n".join(parts).strip()
 
     def _default_config(self) -> Dict:
         return {
@@ -1026,12 +1101,17 @@ class BrainRuntime:
         pending_input.append({"role": "user", "content": str(item.get("text") or "")})
 
         for _ in range(max_rounds):
+            system_prompt = str(cfg.get("system_prompt") or "")
+            policy_blob = self._user_root_policy_blob()
+            if policy_blob:
+                system_prompt = (system_prompt + "\n\n" + policy_blob).strip()
+
             body: Dict[str, Any] = {
                 "model": model,
                 "tools": tools,
                 "input": pending_input,
                 # Keep instructions on every round; some models drift once the tool loop begins.
-                "instructions": str(cfg.get("system_prompt") or ""),
+                "instructions": system_prompt,
             }
             if previous_response_id:
                 body["previous_response_id"] = previous_response_id
@@ -1349,10 +1429,14 @@ class BrainRuntime:
             "Set actions=[] when the task is complete. "
             "Input:\n" + json.dumps(user_payload)
         )
+        system_prompt = str(cfg.get("system_prompt") or "")
+        policy_blob = self._user_root_policy_blob()
+        if policy_blob:
+            system_prompt = (system_prompt + "\n\n" + policy_blob).strip()
         if provider_url.rstrip("/").endswith("/responses"):
             body = {
                 "model": model,
-                "instructions": str(cfg.get("system_prompt") or ""),
+                "instructions": system_prompt,
                 "input": [{"role": "user", "content": planner_prompt}],
             }
         else:
@@ -1360,7 +1444,7 @@ class BrainRuntime:
                 "model": model,
                 "temperature": float(cfg.get("temperature", 0.2) or 0.2),
                 "messages": [
-                    {"role": "system", "content": str(cfg.get("system_prompt") or "")},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": planner_prompt},
                 ],
             }

@@ -1378,7 +1378,7 @@ class LocalHttpServer(
             "If you can satisfy a request by writing code/scripts, do it and execute them via tools. ",
             "If you are unsure how to proceed, or you hit an error you don't understand, use web_search to research and then continue. ",
             "If a needed device capability is not exposed by tools, say so and propose the smallest code change to add it. ",
-            "At the start of a session, read user-root docs: `AGENTS.md` and `TOOLS.md`. ",
+            "User-root docs (`AGENTS.md`, `TOOLS.md`) are auto-injected into your context and reloaded if they change on disk; do not repeatedly read them via filesystem tools unless the user explicitly asks. ",
             "For files: use filesystem tools under the user root (not shell `ls`/`cat`). ",
             "For execution: use run_python/run_pip/run_curl only. ",
             "Device/resource access requires explicit user approval; if permission_required, ask the user to approve in the app UI and then retry automatically (approvals are remembered for the session). ",

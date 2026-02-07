@@ -111,6 +111,7 @@ class PythonRuntimeInstaller(private val context: Context) {
             pb.environment()["KUGUTZ_NATIVELIB"] = nativeLibDir
             pb.environment()["LD_LIBRARY_PATH"] = nativeLibDir
             pb.environment()["PYTHONHOME"] = pyenvDir.absolutePath
+            pb.environment()["KUGUTZ_IDENTITY"] = jp.espresso3389.kugutz.perm.InstallIdentity(context).get()
             pb.environment()["PYTHONPATH"] = listOf(
                 serverDir.absolutePath,
                 "${pyenvDir.absolutePath}/site-packages",

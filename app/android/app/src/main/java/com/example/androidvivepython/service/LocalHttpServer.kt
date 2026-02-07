@@ -13,6 +13,8 @@ import jp.espresso3389.kugutz.perm.PermissionStoreFacade
 import jp.espresso3389.kugutz.perm.CredentialStore
 import jp.espresso3389.kugutz.perm.SshKeyStore
 import jp.espresso3389.kugutz.perm.SshKeyPolicy
+import jp.espresso3389.kugutz.perm.InstallIdentity
+import jp.espresso3389.kugutz.perm.PermissionPrefs
 
 class LocalHttpServer(
     private val context: Context,
@@ -21,6 +23,8 @@ class LocalHttpServer(
     private val uiRoot = File(context.filesDir, "www")
     private val sshdManager = SshdManager(context)
     private val permissionStore = PermissionStoreFacade(context)
+    private val permissionPrefs = PermissionPrefs(context)
+    private val installIdentity = InstallIdentity(context)
     private val credentialStore = CredentialStore(context)
     private val sshKeyStore = SshKeyStore(context)
     private val sshKeyPolicy = SshKeyPolicy(context)
@@ -109,11 +113,16 @@ class LocalHttpServer(
                 val tool = payload.optString("tool", "unknown")
                 val detail = payload.optString("detail", "")
                 val requestedScope = payload.optString("scope", "once")
-                val scope = if (tool == "ssh_keys") "once" else requestedScope
                 val headerIdentity = (session.headers["x-kugutz-identity"] ?: "").trim()
-                val identity = payload.optString("identity", "").trim().ifBlank { headerIdentity }
+                val identity = payload.optString("identity", "").trim().ifBlank { headerIdentity }.ifBlank { installIdentity.get() }
                 val capabilityFromTool = if (tool.startsWith("device.")) tool.removePrefix("device.").trim() else ""
                 val capability = payload.optString("capability", "").trim().ifBlank { capabilityFromTool }
+                val remember = permissionPrefs.rememberApprovals()
+                val scope = when {
+                    tool == "ssh_keys" -> "once"
+                    remember && requestedScope.trim() == "once" -> "persistent"
+                    else -> requestedScope
+                }
 
                 if (identity.isNotBlank() && scope != "once") {
                     val pending = permissionStore.findRecentPending(
@@ -187,6 +196,23 @@ class LocalHttpServer(
                         .put("identity", req.identity)
                         .put("capability", req.capability)
                 )
+            }
+            uri == "/permissions/prefs" && session.method == Method.GET -> {
+                jsonResponse(
+                    JSONObject()
+                        .put("remember_approvals", permissionPrefs.rememberApprovals())
+                        .put("identity", installIdentity.get())
+                )
+            }
+            uri == "/permissions/prefs" && session.method == Method.POST -> {
+                val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                val remember = payload.optBoolean("remember_approvals", true)
+                permissionPrefs.setRememberApprovals(remember)
+                jsonResponse(JSONObject().put("remember_approvals", permissionPrefs.rememberApprovals()))
+            }
+            uri == "/permissions/clear" && session.method == Method.POST -> {
+                permissionStore.clearAll()
+                jsonResponse(JSONObject().put("status", "ok"))
             }
             uri == "/permissions/pending" -> {
                 val pending = permissionStore.listPending()
@@ -634,6 +660,7 @@ class LocalHttpServer(
                 pb.redirectErrorStream(true)
                 pb.environment()["KUGUTZ_PYENV"] = pyenvDir.absolutePath
                 pb.environment()["KUGUTZ_NATIVELIB"] = nativeLibDir
+                pb.environment()["KUGUTZ_IDENTITY"] = installIdentity.get()
                 if (wheelhouseDir != null) {
                     pb.environment()["KUGUTZ_WHEELHOUSE"] = wheelhouseDir.absolutePath
                     pb.environment()["PIP_FIND_LINKS"] = wheelhouseDir.absolutePath
@@ -680,7 +707,7 @@ class LocalHttpServer(
         }
         val maxResults = payload.optInt("max_results", payload.optInt("limit", 5)).coerceIn(1, 10)
         val headerIdentity = (session.headers["x-kugutz-identity"] ?: "").trim()
-        val identity = payload.optString("identity", "").trim().ifBlank { headerIdentity }
+        val identity = payload.optString("identity", "").trim().ifBlank { headerIdentity }.ifBlank { installIdentity.get() }
         var permissionId = payload.optString("permission_id", "")
 
         if (!isPermissionApproved(permissionId, consume = true) && identity.isNotBlank()) {

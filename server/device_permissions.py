@@ -45,7 +45,7 @@ def _request_json(
         return {"status": "error", "error": str(ex)}
 
 
-def request(tool: str, detail: str = "", scope: str = "once", identity: str = "") -> Dict[str, Any]:
+def request(tool: str, detail: str = "", scope: str = "session", identity: str = "") -> Dict[str, Any]:
     """
     Create a permission request in the Kotlin control plane.
 
@@ -108,7 +108,7 @@ def wait(permission_id: str, timeout_s: float = 60.0, poll_s: float = 0.5) -> Di
 def ensure_device(
     capability: str,
     detail: str = "",
-    scope: str = "once",
+    scope: str = "persistent",
     timeout_s: float = 60.0,
     identity: str = "",
 ) -> str:

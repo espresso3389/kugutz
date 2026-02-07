@@ -139,6 +139,20 @@ class PermissionStoreFacade(context: Context) {
         }
     }
 
+    fun clearAll() {
+        try {
+            if (dbAvailable.get()) {
+                dbStore.clearAll()
+            } else {
+                fallback.clearAll()
+            }
+        } catch (ex: Throwable) {
+            Log.e(TAG, "Permission DB unavailable, falling back", ex)
+            dbAvailable.set(false)
+            fallback.clearAll()
+        }
+    }
+
     private class InMemoryPermissionStore {
         private val counter = AtomicLong(System.currentTimeMillis())
         private val items = ConcurrentHashMap<String, PermissionStore.PermissionRequest>()
@@ -177,6 +191,10 @@ class PermissionStoreFacade(context: Context) {
 
         fun get(id: String): PermissionStore.PermissionRequest? {
             return items[id]
+        }
+
+        fun clearAll() {
+            items.clear()
         }
 
         fun findLatestApproved(

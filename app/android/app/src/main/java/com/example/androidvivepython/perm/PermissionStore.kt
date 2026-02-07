@@ -61,6 +61,10 @@ class PermissionStore(context: Context) {
         return dao.findLatestPending(ident, t, cap)?.toModel()
     }
 
+    fun clearAll() {
+        dao.deleteAll()
+    }
+
     data class PermissionRequest(
         val id: String,
         val tool: String,

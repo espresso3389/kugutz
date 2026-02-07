@@ -7,11 +7,13 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicReference
+import jp.espresso3389.kugutz.perm.InstallIdentity
 
 class SshdManager(private val context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val processRef = AtomicReference<Process?>(null)
+    private val installIdentity = InstallIdentity(context)
 
     fun startIfEnabled() {
         if (isEnabled()) {
@@ -114,6 +116,7 @@ class SshdManager(private val context: Context) {
             val pb = ProcessBuilder(args)
             pb.environment()["HOME"] = userHome.absolutePath
             pb.environment()["KUGUTZ_HOME"] = userHome.absolutePath
+            pb.environment()["KUGUTZ_IDENTITY"] = installIdentity.get()
             if (shellBin != null) {
                 pb.environment()["KUGUTZ_SHELL"] = shellBin.absolutePath
             }

@@ -31,6 +31,9 @@ interface PermissionDao {
     )
     fun findLatestPending(identity: String, tool: String, capability: String): PermissionEntity?
 
+    @Query("DELETE FROM permissions")
+    fun deleteAll()
+
     @Update
     fun update(entity: PermissionEntity)
 }

@@ -6,11 +6,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.io.File
 import android.content.Intent
+import jp.espresso3389.kugutz.perm.InstallIdentity
 
 class PythonRuntimeManager(private val context: Context) {
     private var runtimeThread: Thread? = null
     private val extractor = AssetExtractor(context)
     private val installer = PythonRuntimeInstaller(context)
+    private val installIdentity = InstallIdentity(context)
     private val lock = Any()
     private val statusLock = Any()
     private var status: String = "offline"
@@ -56,6 +58,12 @@ class PythonRuntimeManager(private val context: Context) {
 
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
         PythonBridge.loadNativeLibs(nativeLibDir)
+        try {
+            // Stable identity improves permission reuse across restarts and matches Android-style "one-time grant".
+            android.system.Os.setenv("KUGUTZ_IDENTITY", installIdentity.get(), true)
+        } catch (_: Throwable) {
+            // Best-effort; some devices/ROMs may restrict setenv.
+        }
 
         runtimeThread = Thread {
             try {

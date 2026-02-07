@@ -109,6 +109,8 @@ class SshdManager(private val context: Context) {
             val nativeLibDir = context.applicationInfo.nativeLibraryDir
             val pyenvDir = File(context.filesDir, "pyenv")
             val serverDir = File(context.filesDir, "server")
+            val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
+            val wheelhouseDir = File(context.filesDir, "wheelhouse/$abi").takeIf { it.exists() && it.isDirectory }
             val pb = ProcessBuilder(args)
             pb.environment()["HOME"] = userHome.absolutePath
             pb.environment()["KUGUTZ_HOME"] = userHome.absolutePath
@@ -128,6 +130,11 @@ class SshdManager(private val context: Context) {
                 "${pyenvDir.absolutePath}/modules",
                 "${pyenvDir.absolutePath}/stdlib.zip"
             ).joinToString(":")
+            if (wheelhouseDir != null) {
+                pb.environment()["KUGUTZ_WHEELHOUSE"] = wheelhouseDir.absolutePath
+                // Let pip resolve prebuilt wheels packaged with the app (e.g. opencv-python shims).
+                pb.environment()["PIP_FIND_LINKS"] = wheelhouseDir.absolutePath
+            }
             // Prefer the managed CA bundle (app-private, refreshable) over certifi's baked-in file.
             val managedCa = File(context.filesDir, "protected/ca/cacert.pem")
             val fallbackCertifi = File(pyenvDir, "site-packages/certifi/cacert.pem")

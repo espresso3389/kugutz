@@ -625,6 +625,8 @@ class LocalHttpServer(
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
         val pyenvDir = File(context.filesDir, "pyenv")
         val serverDir = File(context.filesDir, "server")
+        val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
+        val wheelhouseDir = File(context.filesDir, "wheelhouse/$abi").takeIf { it.exists() && it.isDirectory }
         return try {
             fun runPythonCommand(cmdline: List<String>): Pair<Int, String> {
                 val pb = ProcessBuilder(cmdline)
@@ -632,6 +634,10 @@ class LocalHttpServer(
                 pb.redirectErrorStream(true)
                 pb.environment()["KUGUTZ_PYENV"] = pyenvDir.absolutePath
                 pb.environment()["KUGUTZ_NATIVELIB"] = nativeLibDir
+                if (wheelhouseDir != null) {
+                    pb.environment()["KUGUTZ_WHEELHOUSE"] = wheelhouseDir.absolutePath
+                    pb.environment()["PIP_FIND_LINKS"] = wheelhouseDir.absolutePath
+                }
                 pb.environment()["LD_LIBRARY_PATH"] = nativeLibDir
                 pb.environment()["PYTHONHOME"] = pyenvDir.absolutePath
                 pb.environment()["PYTHONPATH"] = listOf(

@@ -10,7 +10,8 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIBUSB_DIR="$ROOT_DIR/third_party/libusb"
 SRC_DIR="$ROOT_DIR/third_party/libuvc"
-OUT_ROOT="$ROOT_DIR/third_party/libuvc/build-android"
+# Keep submodules clean: build outputs go outside third_party/.
+OUT_ROOT="$ROOT_DIR/.native-build/libuvc/build-android"
 JNI_LIBS_DIR="${JNI_LIBS_DIR:-$ROOT_DIR/app/android/app/src/main/jniLibs}"
 API="${ANDROID_API:-21}"
 ABIS="${ABIS:-arm64-v8a}"
@@ -32,6 +33,14 @@ for ABI in $ABIS; do
   fi
 
   BUILD_DIR="$OUT_ROOT/$ABI"
+  # If this directory was created from a different checkout path, CMake will hard-fail.
+  # Prefer a clean build dir over a brittle cache mismatch.
+  if [[ -f "$BUILD_DIR/CMakeCache.txt" ]]; then
+    cached_home="$(grep -E '^CMAKE_HOME_DIRECTORY:INTERNAL=' "$BUILD_DIR/CMakeCache.txt" | head -n1 | cut -d= -f2- || true)"
+    if [[ -n "$cached_home" && "$cached_home" != "$SRC_DIR" ]]; then
+      rm -rf "$BUILD_DIR"
+    fi
+  fi
   PKG_DIR="$BUILD_DIR/pkgconfig"
   mkdir -p "$PKG_DIR"
   cat > "$PKG_DIR/libusb-1.0.pc" <<EOF

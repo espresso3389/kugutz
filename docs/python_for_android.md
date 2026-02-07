@@ -94,6 +94,22 @@ Sets all Python-related environment variables on the Dropbear `ProcessBuilder`, 
 
 Extracts the p4a Python runtime from APK assets to `<filesDir>/pyenv/`. Ensures the `bin/` directory exists for other tools.
 
+### Wheelhouse (optional)
+
+To keep `pip` dependency resolution working for packages that require Android-native wheels (e.g. `opencv-python`),
+the app can ship a local "wheelhouse" inside APK assets:
+
+- `app/android/app/src/main/assets/wheels/<abi>/*.whl`
+
+At runtime this is extracted to:
+
+- `<filesDir>/wheelhouse/<abi>/`
+
+and exported via env vars for both SSH sessions and `shell_exec`:
+
+- `PIP_FIND_LINKS=<filesDir>/wheelhouse/<abi>`
+- `KUGUTZ_WHEELHOUSE=<filesDir>/wheelhouse/<abi>`
+
 ## Technical Challenges
 
 ### SELinux app_data_file Execution Restriction

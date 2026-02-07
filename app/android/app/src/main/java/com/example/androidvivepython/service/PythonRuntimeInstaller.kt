@@ -36,6 +36,8 @@ class PythonRuntimeInstaller(private val context: Context) {
             ensureLibDynloadFromModules(pythonHome)
             ensureSysconfigDataStub(pythonHome)
             ensurePythonBinaries()
+            ensureWheelhouse(currentVersion)
+            ensureFacadePackages(currentVersion)
             return true
         }
 
@@ -59,11 +61,110 @@ class PythonRuntimeInstaller(private val context: Context) {
                 ensureLibDynloadFromModules(pythonHome)
                 ensureSysconfigDataStub(pythonHome)
                 ensurePythonBinaries()
+                ensureWheelhouse(currentVersion)
+                ensureFacadePackages(currentVersion)
             }
             ok
         } catch (ex: Exception) {
             Log.e(TAG, "Failed to install Python runtime", ex)
             false
+        }
+    }
+
+    private fun ensureFacadePackages(currentVersion: Long) {
+        try {
+            if (currentVersion == -1L) return
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val stored = prefs.getLong(KEY_FACADE_VERSION, -1L)
+            if (stored == currentVersion) return
+
+            val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return
+            val wheelhouseDir = File(context.filesDir, "wheelhouse/$abi")
+            if (!wheelhouseDir.exists() || !wheelhouseDir.isDirectory) return
+
+            val nativeLibDir = context.applicationInfo.nativeLibraryDir
+            val pyenvDir = File(context.filesDir, "pyenv")
+            val serverDir = File(context.filesDir, "server")
+            val pythonExe = File(nativeLibDir, "libkugutzpy.so")
+            if (!pythonExe.exists()) return
+
+            val args = listOf(
+                pythonExe.absolutePath,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-input",
+                "--no-index",
+                "--find-links",
+                wheelhouseDir.absolutePath,
+                "--no-deps",
+                "--upgrade",
+                "libusb",
+                "libuvc",
+                "opencv-android"
+            )
+
+            val logFile = File(pyenvDir, "facade_install.log")
+            val pb = ProcessBuilder(args)
+            pb.environment()["KUGUTZ_PYENV"] = pyenvDir.absolutePath
+            pb.environment()["KUGUTZ_NATIVELIB"] = nativeLibDir
+            pb.environment()["LD_LIBRARY_PATH"] = nativeLibDir
+            pb.environment()["PYTHONHOME"] = pyenvDir.absolutePath
+            pb.environment()["PYTHONPATH"] = listOf(
+                serverDir.absolutePath,
+                "${pyenvDir.absolutePath}/site-packages",
+                "${pyenvDir.absolutePath}/modules",
+                "${pyenvDir.absolutePath}/stdlib.zip"
+            ).joinToString(":")
+            pb.environment()["KUGUTZ_WHEELHOUSE"] = wheelhouseDir.absolutePath
+            pb.environment()["PIP_FIND_LINKS"] = wheelhouseDir.absolutePath
+
+            // Prefer the managed CA bundle (app-private, refreshable) over certifi's baked-in file.
+            val managedCa = File(context.filesDir, "protected/ca/cacert.pem")
+            val fallbackCertifi = File(pyenvDir, "site-packages/certifi/cacert.pem")
+            val caFile = when {
+                managedCa.exists() && managedCa.length() > 0 -> managedCa
+                fallbackCertifi.exists() -> fallbackCertifi
+                else -> null
+            }
+            if (caFile != null) {
+                pb.environment()["SSL_CERT_FILE"] = caFile.absolutePath
+                pb.environment()["PIP_CERT"] = caFile.absolutePath
+                pb.environment()["REQUESTS_CA_BUNDLE"] = caFile.absolutePath
+            }
+
+            pb.redirectErrorStream(true)
+            pb.redirectOutput(logFile)
+            val proc = pb.start()
+            val rc = proc.waitFor()
+            if (rc == 0) {
+                prefs.edit().putLong(KEY_FACADE_VERSION, currentVersion).apply()
+            } else {
+                Log.w(TAG, "Facade package install failed rc=$rc (see ${logFile.absolutePath})")
+            }
+        } catch (ex: Exception) {
+            Log.w(TAG, "Failed to install facade packages", ex)
+        }
+    }
+
+    private fun ensureWheelhouse(currentVersion: Long) {
+        try {
+            if (currentVersion == -1L) return
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val stored = prefs.getLong(KEY_WHEELHOUSE_VERSION, -1L)
+            val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return
+            val targetDir = File(context.filesDir, "wheelhouse/$abi")
+            val needs = stored != currentVersion || !targetDir.exists() || (targetDir.list()?.isEmpty() != false)
+            if (!needs) return
+
+            if (targetDir.exists()) {
+                targetDir.deleteRecursively()
+            }
+            extractor.extractWheelhouseForCurrentAbi()
+            prefs.edit().putLong(KEY_WHEELHOUSE_VERSION, currentVersion).apply()
+        } catch (ex: Exception) {
+            Log.w(TAG, "Failed to install wheelhouse", ex)
         }
     }
 
@@ -351,5 +452,7 @@ class PythonRuntimeInstaller(private val context: Context) {
         private const val TAG = "PythonRuntimeInstaller"
         private const val PREFS_NAME = "python_runtime"
         private const val KEY_RUNTIME_VERSION = "runtime_version"
+        private const val KEY_WHEELHOUSE_VERSION = "wheelhouse_version"
+        private const val KEY_FACADE_VERSION = "facade_version"
     }
 }

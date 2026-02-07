@@ -101,8 +101,21 @@ val buildUsbLibs by tasks.registering(Exec::class) {
     )
 }
 
+val buildFacadeWheels by tasks.registering(Exec::class) {
+    val repoRoot = rootProject.projectDir.parentFile.parentFile
+    workingDir = repoRoot
+    commandLine("bash", "-lc", "python3 ./scripts/build_facade_wheels.py")
+}
+
+val fetchOpenCvAndroidSdk by tasks.registering(Exec::class) {
+    val repoRoot = rootProject.projectDir.parentFile.parentFile
+    workingDir = repoRoot
+    // Opt-in: script no-ops unless OPENCV_ANDROID_SDK_URL is provided in the environment.
+    commandLine("bash", "-lc", "./scripts/fetch_opencv_android_sdk.sh")
+}
+
 tasks.named("preBuild") {
-    dependsOn(syncServerAssets, syncUserDefaults, buildUsbLibs)
+    dependsOn(syncServerAssets, syncUserDefaults, buildUsbLibs, buildFacadeWheels, fetchOpenCvAndroidSdk)
 }
 
 dependencies {

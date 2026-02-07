@@ -29,6 +29,40 @@ class AssetExtractor(private val context: Context) {
         }
     }
 
+    fun extractWheelhouseForCurrentAbi(): File? {
+        return try {
+            val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return null
+            val targetDir = File(context.filesDir, "wheelhouse/$abi")
+            targetDir.mkdirs()
+            var copiedAny = false
+
+            // Common wheels (pure-Python facades).
+            val commonPath = "wheels/common"
+            val commonEntries = context.assets.list(commonPath)
+            if (commonEntries != null && commonEntries.isNotEmpty()) {
+                copyAssetDir(commonPath, targetDir)
+                copiedAny = true
+            }
+
+            // ABI-specific wheels (native payloads like opencv_python).
+            val abiPath = "wheels/$abi"
+            val abiEntries = context.assets.list(abiPath)
+            if (abiEntries != null && abiEntries.isNotEmpty()) {
+                copyAssetDir(abiPath, targetDir)
+                copiedAny = true
+            }
+
+            if (!copiedAny) {
+                // Nothing packaged for this ABI (and no common wheels).
+                return null
+            }
+            targetDir
+        } catch (ex: Exception) {
+            Log.e(TAG, "Failed to extract wheelhouse", ex)
+            null
+        }
+    }
+
     fun extractDropbearIfMissing(): File? {
         return try {
             val targetDir = File(context.filesDir, "bin")

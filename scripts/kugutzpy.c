@@ -187,6 +187,19 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* Wheelhouse: allow pip to resolve prebuilt wheels shipped with the app.
+     *
+     * The Android side sets KUGUTZ_WHEELHOUSE to a directory containing wheels
+     * (e.g. an opencv-python shim wheel + its real payload).
+     *
+     * Don't override if already set by the caller. */
+    {
+        const char *wheelhouse = getenv("KUGUTZ_WHEELHOUSE");
+        if (wheelhouse && wheelhouse[0]) {
+            setenv("PIP_FIND_LINKS", wheelhouse, 0);
+        }
+    }
+
     /* Set LD_LIBRARY_PATH if we can find the native libs */
     if (resolve_nativelib(nativelib, sizeof(nativelib)) == 0) {
         const char *existing = getenv("LD_LIBRARY_PATH");

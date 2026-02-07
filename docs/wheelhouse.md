@@ -23,7 +23,7 @@ on-device. For these, we need prebuilt wheels for:
 - Our ABI (`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`)
 
 Example: `opencv-python` typically has no Android wheels on PyPI, so "pip install"
-will fail unless we ship our own wheel(s).
+will fail unless we ship our own wheel(s) or a facade wheel for dependency resolution.
 
 ## Wheelhouse Layout (Packaged In APK)
 Wheels are bundled under:
@@ -75,7 +75,7 @@ Notes:
 
 ## Facade Packages (When Needed)
 Facade wheels are only for names that pip needs to resolve but that do not exist
-as real packages on any index (example in this repo: `libuvc`, `libusb`, `opencv-android`).
+as real packages on any index (example in this repo: `opencv-python`).
 
 For standard ecosystem packages (`pyusb`, `pyuvc`, `opencv-python`), prefer shipping
 real wheels for those names rather than a facade.
@@ -92,5 +92,5 @@ The Kotlin control plane provides helper endpoints for managing wheels and insta
 
 ## Current Implementation Pointers
 - Wheelhouse extraction: `app/android/app/src/main/java/.../service/AssetExtractor.kt`
-- Runtime bootstrap install: `app/android/app/src/main/java/.../service/PythonRuntimeInstaller.kt`
+- Bundled-wheel bootstrap install (runs via embedded Python worker): `app/android/app/src/main/java/.../service/PythonRuntimeManager.kt`
 - Env propagation for SSH: `app/android/app/src/main/java/.../service/SshdManager.kt`

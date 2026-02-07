@@ -682,80 +682,18 @@ class LocalHttpServer(
             return jsonError(Response.Status.FORBIDDEN, "command_not_allowed")
         }
 
-        if (cmd == "curl") {
-            if (runtimeManager.getStatus() != "ok") {
-                runtimeManager.startWorker()
-                waitForPythonHealth(5000)
-            }
-            val proxied = proxyShellExecToWorker(cmd, args, cwd)
-            if (proxied != null) {
-                return proxied
-            }
-            return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_unavailable")
+        // Always proxy to the embedded Python worker.
+        // Executing the CLI binary directly (ProcessBuilder + libkugutzpy.so) can crash when
+        // Android/JNI integration modules (pyjnius) are imported without a proper JVM context.
+        if (runtimeManager.getStatus() != "ok") {
+            runtimeManager.startWorker()
+            waitForPythonHealth(5000)
         }
-
-        val pythonExe = resolvePythonBinary()
-        if (pythonExe == null) {
-            if (runtimeManager.getStatus() != "ok") {
-                runtimeManager.startWorker()
-                waitForPythonHealth(5000)
-            }
-            val proxied = proxyShellExecToWorker(cmd, args, cwd)
-            if (proxied != null) {
-                return proxied
-            }
-            return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_missing")
+        val proxied = proxyShellExecToWorker(cmd, args, cwd)
+        if (proxied != null) {
+            return proxied
         }
-        val userHome = File(context.filesDir, "user")
-        val resolvedCwd = resolveUserPath(userHome, cwd) ?: userHome
-
-        val argList = if (args.isBlank()) emptyList() else args.split(Regex("\\s+"))
-        val command = when (cmd) {
-            "pip" -> listOf(pythonExe.absolutePath, "-m", "pip") + argList
-            else -> listOf(pythonExe.absolutePath) + argList
-        }
-
-        val nativeLibDir = context.applicationInfo.nativeLibraryDir
-        val pyenvDir = File(context.filesDir, "pyenv")
-        val serverDir = File(context.filesDir, "server")
-        val wheelhouse = WheelhousePaths.forCurrentAbi(context)?.also { it.ensureDirs() }
-        return try {
-            fun runPythonCommand(cmdline: List<String>): Pair<Int, String> {
-                val pb = ProcessBuilder(cmdline)
-                pb.directory(resolvedCwd)
-                pb.redirectErrorStream(true)
-                pb.environment()["KUGUTZ_PYENV"] = pyenvDir.absolutePath
-                pb.environment()["KUGUTZ_NATIVELIB"] = nativeLibDir
-                pb.environment()["KUGUTZ_IDENTITY"] = installIdentity.get()
-                pb.environment()["HOME"] = userHome.absolutePath
-                if (wheelhouse != null) {
-                    pb.environment()["KUGUTZ_WHEELHOUSE"] = wheelhouse.findLinksEnvValue()
-                    pb.environment()["PIP_FIND_LINKS"] = wheelhouse.findLinksEnvValue()
-                }
-                pb.environment()["LD_LIBRARY_PATH"] = nativeLibDir
-                pb.environment()["PYTHONHOME"] = pyenvDir.absolutePath
-                pb.environment()["PYTHONPATH"] = listOf(
-                    serverDir.absolutePath,
-                    "${pyenvDir.absolutePath}/site-packages",
-                    "${pyenvDir.absolutePath}/modules",
-                    "${pyenvDir.absolutePath}/stdlib.zip"
-                ).joinToString(":")
-                val proc = pb.start()
-                val output = proc.inputStream.bufferedReader().readText()
-                val code = proc.waitFor()
-                return Pair(code, output)
-            }
-
-            val result = runPythonCommand(command)
-            jsonResponse(
-                JSONObject()
-                    .put("status", "ok")
-                    .put("code", result.first)
-                    .put("output", result.second)
-            )
-        } catch (ex: Exception) {
-            jsonError(Response.Status.INTERNAL_ERROR, "exec_failed", JSONObject().put("detail", ex.message ?: ""))
-        }
+        return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_unavailable")
     }
 
     private fun ensurePipPermission(
@@ -838,16 +776,7 @@ class LocalHttpServer(
         val perm = ensurePipPermission(session, payload, capability = "pip.download", detail = detail)
         if (!perm.first) return perm.second!!
 
-        val pythonExe = resolvePythonBinary() ?: return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_missing")
-        val nativeLibDir = context.applicationInfo.nativeLibraryDir
-        val pyenvDir = File(context.filesDir, "pyenv")
-        val serverDir = File(context.filesDir, "server")
-        val userHome = File(context.filesDir, "user")
-
         val args = mutableListOf(
-            pythonExe.absolutePath,
-            "-m",
-            "pip",
             "download",
             "--disable-pip-version-check",
             "--no-input",
@@ -885,49 +814,13 @@ class LocalHttpServer(
         }
         args.addAll(pkgs)
 
-        return try {
-            val pb = ProcessBuilder(args)
-            pb.redirectErrorStream(true)
-            pb.environment()["HOME"] = userHome.absolutePath
-            pb.environment()["KUGUTZ_PYENV"] = pyenvDir.absolutePath
-            pb.environment()["KUGUTZ_NATIVELIB"] = nativeLibDir
-            pb.environment()["LD_LIBRARY_PATH"] = nativeLibDir
-            pb.environment()["PYTHONHOME"] = pyenvDir.absolutePath
-            pb.environment()["PYTHONPATH"] = listOf(
-                serverDir.absolutePath,
-                "${pyenvDir.absolutePath}/site-packages",
-                "${pyenvDir.absolutePath}/modules",
-                "${pyenvDir.absolutePath}/stdlib.zip"
-            ).joinToString(":")
-            pb.environment()["KUGUTZ_WHEELHOUSE"] = wheelhouse.findLinksEnvValue()
-            pb.environment()["PIP_FIND_LINKS"] = wheelhouse.findLinksEnvValue()
-
-            val managedCa = File(context.filesDir, "protected/ca/cacert.pem")
-            val fallbackCertifi = File(pyenvDir, "site-packages/certifi/cacert.pem")
-            val caFile = when {
-                managedCa.exists() && managedCa.length() > 0 -> managedCa
-                fallbackCertifi.exists() -> fallbackCertifi
-                else -> null
-            }
-            if (caFile != null) {
-                pb.environment()["SSL_CERT_FILE"] = caFile.absolutePath
-                pb.environment()["PIP_CERT"] = caFile.absolutePath
-                pb.environment()["REQUESTS_CA_BUNDLE"] = caFile.absolutePath
-            }
-
-            val proc = pb.start()
-            val output = proc.inputStream.bufferedReader().readText()
-            val code = proc.waitFor()
-            jsonResponse(
-                JSONObject()
-                    .put("status", "ok")
-                    .put("code", code)
-                    .put("output", output)
-                    .put("dest", wheelhouse.user.absolutePath)
-            )
-        } catch (ex: Exception) {
-            jsonError(Response.Status.INTERNAL_ERROR, "pip_download_failed", JSONObject().put("detail", ex.message ?: ""))
+        if (runtimeManager.getStatus() != "ok") {
+            runtimeManager.startWorker()
+            waitForPythonHealth(5000)
         }
+        val proxied = proxyShellExecToWorker("pip", args.joinToString(" "), "")
+        if (proxied != null) return proxied
+        return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_unavailable")
     }
 
     private fun handlePipInstall(session: IHTTPSession, payload: JSONObject): Response {
@@ -963,16 +856,7 @@ class LocalHttpServer(
         val perm = ensurePipPermission(session, payload, capability = permCap, detail = detail)
         if (!perm.first) return perm.second!!
 
-        val pythonExe = resolvePythonBinary() ?: return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_missing")
-        val nativeLibDir = context.applicationInfo.nativeLibraryDir
-        val pyenvDir = File(context.filesDir, "pyenv")
-        val serverDir = File(context.filesDir, "server")
-        val userHome = File(context.filesDir, "user")
-
         val args = mutableListOf(
-            pythonExe.absolutePath,
-            "-m",
-            "pip",
             "install",
             "--disable-pip-version-check",
             "--no-input"
@@ -1015,49 +899,13 @@ class LocalHttpServer(
         }
         args.addAll(pkgs)
 
-        return try {
-            val pb = ProcessBuilder(args)
-            pb.redirectErrorStream(true)
-            pb.environment()["HOME"] = userHome.absolutePath
-            pb.environment()["KUGUTZ_PYENV"] = pyenvDir.absolutePath
-            pb.environment()["KUGUTZ_NATIVELIB"] = nativeLibDir
-            pb.environment()["LD_LIBRARY_PATH"] = nativeLibDir
-            pb.environment()["PYTHONHOME"] = pyenvDir.absolutePath
-            pb.environment()["PYTHONPATH"] = listOf(
-                serverDir.absolutePath,
-                "${pyenvDir.absolutePath}/site-packages",
-                "${pyenvDir.absolutePath}/modules",
-                "${pyenvDir.absolutePath}/stdlib.zip"
-            ).joinToString(":")
-            pb.environment()["KUGUTZ_WHEELHOUSE"] = wheelhouse.findLinksEnvValue()
-            pb.environment()["PIP_FIND_LINKS"] = wheelhouse.findLinksEnvValue()
-
-            val managedCa = File(context.filesDir, "protected/ca/cacert.pem")
-            val fallbackCertifi = File(pyenvDir, "site-packages/certifi/cacert.pem")
-            val caFile = when {
-                managedCa.exists() && managedCa.length() > 0 -> managedCa
-                fallbackCertifi.exists() -> fallbackCertifi
-                else -> null
-            }
-            if (caFile != null) {
-                pb.environment()["SSL_CERT_FILE"] = caFile.absolutePath
-                pb.environment()["PIP_CERT"] = caFile.absolutePath
-                pb.environment()["REQUESTS_CA_BUNDLE"] = caFile.absolutePath
-            }
-
-            val proc = pb.start()
-            val output = proc.inputStream.bufferedReader().readText()
-            val code = proc.waitFor()
-            jsonResponse(
-                JSONObject()
-                    .put("status", "ok")
-                    .put("code", code)
-                    .put("output", output)
-                    .put("mode", mode)
-            )
-        } catch (ex: Exception) {
-            jsonError(Response.Status.INTERNAL_ERROR, "pip_install_failed", JSONObject().put("detail", ex.message ?: ""))
+        if (runtimeManager.getStatus() != "ok") {
+            runtimeManager.startWorker()
+            waitForPythonHealth(5000)
         }
+        val proxied = proxyShellExecToWorker("pip", args.joinToString(" "), "")
+        if (proxied != null) return proxied
+        return jsonError(Response.Status.SERVICE_UNAVAILABLE, "python_unavailable")
     }
 
     private fun handleWebSearch(session: IHTTPSession, payload: JSONObject): Response {

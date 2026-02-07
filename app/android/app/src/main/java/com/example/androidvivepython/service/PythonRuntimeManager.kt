@@ -7,6 +7,7 @@ import java.net.URL
 import java.io.File
 import android.content.Intent
 import jp.espresso3389.kugutz.perm.InstallIdentity
+import org.json.JSONObject
 
 class PythonRuntimeManager(private val context: Context) {
     private var runtimeThread: Thread? = null
@@ -19,6 +20,8 @@ class PythonRuntimeManager(private val context: Context) {
     private var pendingRestart = false
     private var stopping = false
     private var startInProgress = false
+    private val bootstrapLock = Any()
+    private var bootstrapInProgress = false
 
     fun startWorker(): Boolean {
         synchronized(lock) {
@@ -214,6 +217,7 @@ class PythonRuntimeManager(private val context: Context) {
                     if (code in 200..299) {
                         Log.i(TAG, "Python service health OK")
                         updateStatus("ok")
+                        ensureBundledPackagesInstalledAsync()
                         return@Thread
                     }
                     Log.w(TAG, "Health check failed (attempt ${attempt + 1}): $code")
@@ -229,6 +233,97 @@ class PythonRuntimeManager(private val context: Context) {
             Log.e(TAG, "Python service health check failed after retries")
             updateStatus("offline")
         }.apply { isDaemon = true }.start()
+    }
+
+    private fun ensureBundledPackagesInstalledAsync() {
+        synchronized(bootstrapLock) {
+            if (bootstrapInProgress) return
+            bootstrapInProgress = true
+        }
+
+        Thread {
+            try {
+                val currentVersion = try {
+                    context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
+                } catch (_: Exception) {
+                    -1L
+                }
+                if (currentVersion == -1L) return@Thread
+
+                val desiredSpec = bundledBootstrapSpec()
+                val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val storedVersion = prefs.getLong(KEY_BUNDLED_BOOTSTRAP_VERSION, -1L)
+                val storedSpec = prefs.getString(KEY_BUNDLED_BOOTSTRAP_SPEC, "") ?: ""
+                if (storedVersion == currentVersion && storedSpec == desiredSpec) return@Thread
+
+                val wheelhouse = WheelhousePaths.forCurrentAbi(context)?.also { it.ensureDirs() } ?: return@Thread
+
+                val args = mutableListOf(
+                    "install",
+                    "--disable-pip-version-check",
+                    "--no-input",
+                    "--no-index",
+                )
+                args.addAll(wheelhouse.findLinksArgs())
+                // Keep bootstrap deterministic/offline: do not try to resolve deps from the network.
+                args.addAll(
+                    listOf(
+                        "--only-binary=:all:",
+                        "--prefer-binary",
+                        "--no-deps",
+                        "--upgrade",
+                        "pyusb",
+                        "opencv-python",
+                    )
+                )
+
+                val result = workerShellExec("pip", args.joinToString(" "), "")
+                val outFile = File(context.filesDir, "pyenv/bootstrap_pip.log")
+                runCatching { outFile.parentFile?.mkdirs() }
+                runCatching { outFile.writeText(result.optString("output", "")) }
+
+                val rc = result.optInt("code", 1)
+                if (rc == 0) {
+                    prefs.edit()
+                        .putLong(KEY_BUNDLED_BOOTSTRAP_VERSION, currentVersion)
+                        .putString(KEY_BUNDLED_BOOTSTRAP_SPEC, desiredSpec)
+                        .apply()
+                    Log.i(TAG, "Bundled pip bootstrap OK ($desiredSpec)")
+                } else {
+                    Log.w(TAG, "Bundled pip bootstrap failed rc=$rc (see ${outFile.absolutePath})")
+                }
+            } finally {
+                synchronized(bootstrapLock) {
+                    bootstrapInProgress = false
+                }
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    private fun bundledBootstrapSpec(): String {
+        // Bump when changing which bundled wheels we expect to be installed at worker start.
+        return listOf(
+            "pyusb",
+            "opencv-python",
+        ).joinToString(",")
+    }
+
+    private fun workerShellExec(cmd: String, args: String, cwd: String): JSONObject {
+        val payload = JSONObject()
+            .put("cmd", cmd)
+            .put("args", args)
+            .put("cwd", cwd)
+        val conn = (URL("http://127.0.0.1:8776/shell/exec").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 2000
+            readTimeout = 20000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+        val stream = if (conn.responseCode in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
+        val body = stream?.bufferedReader()?.use { it.readText() } ?: "{}"
+        return JSONObject(body.ifBlank { "{}" })
     }
 
     private fun updateStatus(status: String) {
@@ -249,6 +344,9 @@ class PythonRuntimeManager(private val context: Context) {
 
     companion object {
         private const val TAG = "PythonRuntimeManager"
+        private const val PREFS_NAME = "python_runtime"
+        private const val KEY_BUNDLED_BOOTSTRAP_VERSION = "bundled_bootstrap_version"
+        private const val KEY_BUNDLED_BOOTSTRAP_SPEC = "bundled_bootstrap_spec"
         const val ACTION_PYTHON_HEALTH = "jp.espresso3389.kugutz.PYTHON_HEALTH"
         const val EXTRA_STATUS = "status"
     }

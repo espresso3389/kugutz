@@ -7,8 +7,8 @@ Layout:
   wheels/<abi>/*.whl
 
 Example:
-  wheels/common/libuvc-0.0.0+kugutz1-py3-none-any.whl
-  wheels/arm64-v8a/opencv_python-4.10.0.84-cp311-cp311-android_34_arm64_v8a.whl
+  wheels/common/pyusb-1.3.1-py3-none-any.whl
+  wheels/common/opencv_python-4.12.0.88+kugutz1-py3-none-any.whl
 
 At runtime the app extracts wheels/<abi>/ to:
   <filesDir>/wheelhouse/<abi>/bundled/

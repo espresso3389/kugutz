@@ -2,8 +2,14 @@
 """
 Build tiny pure-Python facade wheels for Android.
 
-Goal: make `pip install libuvc` / `pip install libusb` / `pip install opencv-android` succeed
-offline on Android, while the actual `.so` binaries are bundled via `jniLibs/`.
+Goal:
+- Provide facade wheels only for packages that don't publish Android wheels but are convenient to
+  have as "installed" distributions.
+- Prefer real upstream wheels for pure-Python packages (e.g. `pyusb`) instead of facades.
+
+At the moment we ship:
+- `opencv-python` facade: provides `opencv_android` helper + a `cv2` stub explaining that the
+  real bindings are not bundled.
 
 This script intentionally avoids external build tooling (setuptools/build/wheel).
 """
@@ -118,20 +124,17 @@ def main() -> int:
     if len(sys.argv) >= 3 and sys.argv[1] == "--out":
         out_dir = Path(sys.argv[2]).resolve()
 
-    version = os.environ.get("KUGUTZ_FACADE_VERSION", "").strip() or "0.0.0+kugutz1"
+    opencv_version = (
+        os.environ.get("KUGUTZ_FACADE_OPENCV_PYTHON_VERSION", "").strip() or "4.12.0.88+kugutz1"
+    )
 
     pkgs = [
         {
-            "dist": "libusb",
-            "src": repo / "server/facades/libusb/src",
-        },
-        {
-            "dist": "libuvc",
-            "src": repo / "server/facades/libuvc/src",
-        },
-        {
-            "dist": "opencv-android",
-            "src": repo / "server/facades/opencv-android/src",
+            # Distribution name must match the ecosystem expectation so dependency resolution works.
+            # The wheel provides an `opencv_android` helper and a `cv2` stub that raises a clear error.
+            "dist": "opencv-python",
+            "src": repo / "server/facades/opencv-python/src",
+            "version": opencv_version,
         },
     ]
 
@@ -140,7 +143,14 @@ def main() -> int:
         src = Path(p["src"])
         if not src.exists():
             raise SystemExit(f"Missing src dir: {src}")
-        built.append(build_wheel(dist_name=str(p["dist"]), version=version, src_root=src, out_dir=out_dir))
+        built.append(
+            build_wheel(
+                dist_name=str(p["dist"]),
+                version=str(p["version"]),
+                src_root=src,
+                out_dir=out_dir,
+            )
+        )
     sys.stdout.write("Built wheels:\n")
     for b in built:
         sys.stdout.write(f"- {b}\n")

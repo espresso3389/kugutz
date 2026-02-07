@@ -8,7 +8,7 @@ def _try_cdll(names: list[str]) -> Optional[ctypes.CDLL]:
     for name in names:
         try:
             return ctypes.CDLL(name, mode=getattr(ctypes, "RTLD_GLOBAL", 0))
-        except BaseException as ex:  # noqa: BLE001 - surface the last error if all probes fail
+        except BaseException as ex:  # noqa: BLE001
             last = ex
     if last is not None:
         raise OSError(f"Failed to load any of: {names}") from last
@@ -17,18 +17,14 @@ def _try_cdll(names: list[str]) -> Optional[ctypes.CDLL]:
 
 def load() -> ctypes.CDLL:
     """
-    Load the app-bundled libusb shared library.
+    Load the app-bundled OpenCV shared library (Android SDK style).
 
-    Expected to be present in Android nativeLibraryDir as `libusb1.0.so`.
+    This is a facade helper; it does not provide Python `cv2` bindings.
     """
-    # First let the dynamic loader resolve via DT_RUNPATH / nativeLibraryDir.
-    probes = ["libusb1.0.so"]
-
-    # Fallback: explicit native lib dir if provided by the app runtime.
+    probes = ["libopencv_java4.so"]
     nlib = os.environ.get("KUGUTZ_NATIVELIB")
     if nlib:
-        probes.append(os.path.join(nlib, "libusb1.0.so"))
-
+        probes.append(os.path.join(nlib, "libopencv_java4.so"))
     return _try_cdll(probes)  # type: ignore[return-value]
 
 

@@ -37,7 +37,6 @@ class PythonRuntimeInstaller(private val context: Context) {
             ensureSysconfigDataStub(pythonHome)
             ensurePythonBinaries()
             ensureWheelhouse(currentVersion)
-            ensureFacadePackages(currentVersion)
             return true
         }
 
@@ -62,7 +61,6 @@ class PythonRuntimeInstaller(private val context: Context) {
                 ensureSysconfigDataStub(pythonHome)
                 ensurePythonBinaries()
                 ensureWheelhouse(currentVersion)
-                ensureFacadePackages(currentVersion)
             }
             ok
         } catch (ex: Exception) {
@@ -71,99 +69,52 @@ class PythonRuntimeInstaller(private val context: Context) {
         }
     }
 
-    private fun ensureFacadePackages(currentVersion: Long) {
-        try {
-            if (currentVersion == -1L) return
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val stored = prefs.getLong(KEY_FACADE_VERSION, -1L)
-            if (stored == currentVersion) return
-
-            val wheelhouse = WheelhousePaths.forCurrentAbi(context) ?: return
-            wheelhouse.ensureDirs()
-
-            val nativeLibDir = context.applicationInfo.nativeLibraryDir
-            val pyenvDir = File(context.filesDir, "pyenv")
-            val serverDir = File(context.filesDir, "server")
-            val pythonExe = File(nativeLibDir, "libkugutzpy.so")
-            if (!pythonExe.exists()) return
-
-            val args = listOf(
-                pythonExe.absolutePath,
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                "--no-input",
-                "--no-index",
-                *wheelhouse.findLinksArgs().toTypedArray(),
-                "--no-deps",
-                "--upgrade",
-                "libusb",
-                "libuvc",
-                "opencv-android"
-            )
-
-            val logFile = File(pyenvDir, "facade_install.log")
-            val pb = ProcessBuilder(args)
-            pb.environment()["KUGUTZ_PYENV"] = pyenvDir.absolutePath
-            pb.environment()["KUGUTZ_NATIVELIB"] = nativeLibDir
-            pb.environment()["LD_LIBRARY_PATH"] = nativeLibDir
-            pb.environment()["PYTHONHOME"] = pyenvDir.absolutePath
-            pb.environment()["KUGUTZ_IDENTITY"] = jp.espresso3389.kugutz.perm.InstallIdentity(context).get()
-            pb.environment()["PYTHONPATH"] = listOf(
-                serverDir.absolutePath,
-                "${pyenvDir.absolutePath}/site-packages",
-                "${pyenvDir.absolutePath}/modules",
-                "${pyenvDir.absolutePath}/stdlib.zip"
-            ).joinToString(":")
-            pb.environment()["KUGUTZ_WHEELHOUSE"] = wheelhouse.findLinksEnvValue()
-            pb.environment()["PIP_FIND_LINKS"] = wheelhouse.findLinksEnvValue()
-
-            // Prefer the managed CA bundle (app-private, refreshable) over certifi's baked-in file.
-            val managedCa = File(context.filesDir, "protected/ca/cacert.pem")
-            val fallbackCertifi = File(pyenvDir, "site-packages/certifi/cacert.pem")
-            val caFile = when {
-                managedCa.exists() && managedCa.length() > 0 -> managedCa
-                fallbackCertifi.exists() -> fallbackCertifi
-                else -> null
-            }
-            if (caFile != null) {
-                pb.environment()["SSL_CERT_FILE"] = caFile.absolutePath
-                pb.environment()["PIP_CERT"] = caFile.absolutePath
-                pb.environment()["REQUESTS_CA_BUNDLE"] = caFile.absolutePath
-            }
-
-            pb.redirectErrorStream(true)
-            pb.redirectOutput(logFile)
-            val proc = pb.start()
-            val rc = proc.waitFor()
-            if (rc == 0) {
-                prefs.edit().putLong(KEY_FACADE_VERSION, currentVersion).apply()
-            } else {
-                Log.w(TAG, "Facade package install failed rc=$rc (see ${logFile.absolutePath})")
-            }
-        } catch (ex: Exception) {
-            Log.w(TAG, "Failed to install facade packages", ex)
-        }
-    }
-
     private fun ensureWheelhouse(currentVersion: Long) {
         try {
             if (currentVersion == -1L) return
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val stored = prefs.getLong(KEY_WHEELHOUSE_VERSION, -1L)
+            val desiredSpec = wheelhouseAssetSpec()
+            val storedSpec = prefs.getString(KEY_WHEELHOUSE_SPEC, "") ?: ""
             val wheelhouse = WheelhousePaths.forCurrentAbi(context) ?: return
+            val expectedEntries = expectedWheelhouseEntries()
+            val currentEntries = (wheelhouse.bundled.list() ?: emptyArray()).toSet()
             val needs = stored != currentVersion ||
+                storedSpec != desiredSpec ||
+                expectedEntries.any { !currentEntries.contains(it) } ||
                 !wheelhouse.bundled.exists() ||
                 (wheelhouse.bundled.list()?.isEmpty() != false)
             if (!needs) return
 
-            extractor.extractWheelhouseForCurrentAbi()
+            val extracted = extractor.extractWheelhouseForCurrentAbi()
             wheelhouse.ensureDirs()
-            prefs.edit().putLong(KEY_WHEELHOUSE_VERSION, currentVersion).apply()
+            val postEntries = (wheelhouse.bundled.list() ?: emptyArray()).toSet()
+            val ok = extracted != null && extracted.exists() && expectedEntries.all { postEntries.contains(it) }
+            if (ok) {
+                prefs.edit()
+                    .putLong(KEY_WHEELHOUSE_VERSION, currentVersion)
+                    .putString(KEY_WHEELHOUSE_SPEC, desiredSpec)
+                    .apply()
+            } else {
+                Log.w(TAG, "Wheelhouse extraction incomplete; will retry on next launch")
+            }
         } catch (ex: Exception) {
             Log.w(TAG, "Failed to install wheelhouse", ex)
         }
+    }
+
+    private fun wheelhouseAssetSpec(): String {
+        val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
+        val common = (context.assets.list("wheels/common") ?: emptyArray()).sorted().joinToString("|")
+        val abiWheels = (context.assets.list("wheels/$abi") ?: emptyArray()).sorted().joinToString("|")
+        return "abi=$abi;common=$common;abi_wheels=$abiWheels"
+    }
+
+    private fun expectedWheelhouseEntries(): List<String> {
+        val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: return emptyList()
+        val common = context.assets.list("wheels/common") ?: emptyArray()
+        val abiWheels = context.assets.list("wheels/$abi") ?: emptyArray()
+        return (common.asList() + abiWheels.asList()).sorted()
     }
 
     /**
@@ -451,6 +402,6 @@ class PythonRuntimeInstaller(private val context: Context) {
         private const val PREFS_NAME = "python_runtime"
         private const val KEY_RUNTIME_VERSION = "runtime_version"
         private const val KEY_WHEELHOUSE_VERSION = "wheelhouse_version"
-        private const val KEY_FACADE_VERSION = "facade_version"
+        private const val KEY_WHEELHOUSE_SPEC = "wheelhouse_spec"
     }
 }

@@ -929,6 +929,10 @@ class BrainRuntime:
                                 "usb.claim_interface",
                                 "usb.release_interface",
                                 "usb.bulk_transfer",
+                                "uvc.ptz.get_abs",
+                                "uvc.ptz.get_limits",
+                                "uvc.ptz.set_abs",
+                                "uvc.ptz.nudge",
                                 "brain.memory.get",
                                 "brain.memory.set",
                             ],
@@ -1459,6 +1463,18 @@ class BrainRuntime:
                     "ssh.pin.status",
                     "ssh.pin.start",
                     "ssh.pin.stop",
+                    "usb.list",
+                    "usb.open",
+                    "usb.close",
+                    "usb.control_transfer",
+                    "usb.raw_descriptors",
+                    "usb.claim_interface",
+                    "usb.release_interface",
+                    "usb.bulk_transfer",
+                    "uvc.ptz.get_abs",
+                    "uvc.ptz.get_limits",
+                    "uvc.ptz.set_abs",
+                    "uvc.ptz.nudge",
                     "brain.memory.get",
                     "brain.memory.set",
                 ],
@@ -1481,7 +1497,7 @@ class BrainRuntime:
             "- move_path: {type:'filesystem', op:'move_path', src:'...', dst:'...', overwrite:false} "
             "- delete_path: {type:'filesystem', op:'delete_path', path:'...', recursive:false}. "
             "For device actions, use tool='device_api' and args shape: "
-            "{action:'python.status|python.restart|ssh.status|ssh.config|ssh.pin.status|ssh.pin.start|ssh.pin.stop|brain.memory.get|brain.memory.set', payload:{...}, detail:'...'}."
+            "{action:'python.status|python.restart|ssh.status|ssh.config|ssh.pin.status|ssh.pin.start|ssh.pin.stop|usb.*|uvc.ptz.*|brain.memory.get|brain.memory.set', payload:{...}, detail:'...'}."
             "If user asks to check status, include at least one device_api status action. "
             "If user asks to change device state, include one device_api mutating action with minimal payload. "
             "Example output for status request: "

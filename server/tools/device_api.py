@@ -1,6 +1,8 @@
 import json
 import os
 import time
+import base64
+import struct
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional
@@ -65,6 +67,9 @@ class DeviceApiTool:
             return {"status": "error", "error": "missing_action"}
         spec = self._ACTIONS.get(action)
         if not spec:
+            # Virtual actions implemented client-side (still executed via the Kotlin control plane).
+            if action.startswith("uvc."):
+                return self._run_uvc_action(action, args)
             return {"status": "error", "error": "unknown_action"}
 
         payload = args.get("payload")
@@ -93,6 +98,217 @@ class DeviceApiTool:
 
         body = payload if spec["method"] == "POST" else None
         return self._request_json(spec["method"], spec["path"], body)
+
+    def _run_uvc_action(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        UVC helpers implemented as "virtual" device_api actions.
+
+        Motivation: UVC CameraTerminal PTZ controls for devices like Insta360 Link can be driven via
+        UsbDeviceConnection.controlTransfer without requiring libusb device discovery on Android.
+        """
+        payload = args.get("payload") or {}
+        if not isinstance(payload, dict):
+            return {"status": "error", "error": "invalid_payload"}
+
+        # All UVC actions are USB actions -> use the same session-scoped permission bucket.
+        detail = str(args.get("detail") or "").strip() or f"{action}: {json.dumps(payload, ensure_ascii=True)[:240]}"
+        pid, req = self._get_or_request_permission("device.usb", "usb", "session", detail)
+        if not pid:
+            return {"status": "permission_required", "request": req}
+
+        # Convenience defaults for UVC PTZ.
+        selector = int(payload.get("selector") or 0x0D)  # CT_PANTILT_ABSOLUTE_CONTROL
+        handle = str(payload.get("handle") or "").strip()
+        if not handle:
+            return {"status": "error", "error": "missing_handle"}
+        timeout_ms = int(payload.get("timeout_ms") or 220)
+
+        # Resolve vc_interface + entity_id (camera terminal id) if absent.
+        vc_interface = payload.get("vc_interface")
+        entity_id = payload.get("entity_id")
+        if vc_interface is None or entity_id is None:
+            guess = self._uvc_guess_vc_and_entity(handle, pid)
+            if vc_interface is None:
+                vc_interface = guess.get("vc_interface")
+            if entity_id is None:
+                entity_id = guess.get("entity_id")
+        if vc_interface is None:
+            vc_interface = 0
+        if entity_id is None:
+            entity_id = 1  # Common for UVC Camera Terminal; also matches Insta360 Link observed behavior.
+
+        vc_interface = int(vc_interface)
+        entity_id = int(entity_id)
+        w_index = ((entity_id & 0xFF) << 8) | (vc_interface & 0xFF)
+        w_value = (selector & 0xFF) << 8
+
+        # UVC class-specific interface request constants.
+        req_type_in = 0xA1   # IN | Class | Interface
+        req_type_out = 0x21  # OUT | Class | Interface
+        set_cur = 0x01
+        get_cur = 0x81
+        get_min = 0x82
+        get_max = 0x83
+
+        def usb_control_transfer(request_type: int, request: int, value: int, index: int, data_b64: str) -> Dict[str, Any]:
+            body = {
+                "permission_id": pid,
+                "handle": handle,
+                "request_type": int(request_type),
+                "request": int(request),
+                "value": int(value),
+                "index": int(index),
+                "data_b64": data_b64,
+                "timeout_ms": int(timeout_ms),
+            }
+            return self._request_json("POST", "/usb/control_transfer", body)
+
+        def ctrl_in(request: int, length: int) -> Dict[str, Any]:
+            return usb_control_transfer(req_type_in, request, w_value, w_index, base64.b64encode(bytes(length)).decode("ascii"))
+
+        def ctrl_out(request: int, data: bytes) -> Dict[str, Any]:
+            return usb_control_transfer(req_type_out, request, w_value, w_index, base64.b64encode(data).decode("ascii"))
+
+        if action == "uvc.ptz.get_abs":
+            resp = ctrl_in(get_cur, 8)
+            raw = self._extract_b64(resp)
+            if raw is None or len(raw) < 8:
+                return {"status": "error", "error": "short_read", "detail": resp}
+            pan_abs, tilt_abs = struct.unpack_from("<ii", raw, 0)
+            return {"status": "ok", "pan_abs": int(pan_abs), "tilt_abs": int(tilt_abs), "detail": resp}
+
+        if action == "uvc.ptz.get_limits":
+            rmin = ctrl_in(get_min, 8)
+            rmax = ctrl_in(get_max, 8)
+            min_raw = self._extract_b64(rmin)
+            max_raw = self._extract_b64(rmax)
+            if min_raw is None or max_raw is None or len(min_raw) < 8 or len(max_raw) < 8:
+                return {"status": "error", "error": "limits_unavailable", "detail": {"min": rmin, "max": rmax}}
+            pan_min, tilt_min = struct.unpack_from("<ii", min_raw, 0)
+            pan_max, tilt_max = struct.unpack_from("<ii", max_raw, 0)
+            return {
+                "status": "ok",
+                "pan_min": int(pan_min),
+                "pan_max": int(pan_max),
+                "tilt_min": int(tilt_min),
+                "tilt_max": int(tilt_max),
+            }
+
+        if action == "uvc.ptz.set_abs":
+            pan_abs = int(payload.get("pan_abs"))
+            tilt_abs = int(payload.get("tilt_abs"))
+            data = struct.pack("<ii", pan_abs, tilt_abs)
+            resp = ctrl_out(set_cur, data)
+            return {"status": "ok", "rc": self._extract_rc(resp), "detail": resp}
+
+        if action == "uvc.ptz.nudge":
+            pan = float(payload.get("pan") or 0.0)
+            tilt = float(payload.get("tilt") or 0.0)
+            step_pan = int(round(max(-1.0, min(1.0, pan)) * float(payload.get("step_pan") or 90000.0)))
+            step_tilt = int(round(max(-1.0, min(1.0, tilt)) * float(payload.get("step_tilt") or 68400.0)))
+
+            cur = self._run_uvc_action("uvc.ptz.get_abs", {"payload": {"handle": handle, "selector": selector, "vc_interface": vc_interface, "entity_id": entity_id}, "detail": "UVC PTZ get abs"})
+            if cur.get("status") != "ok":
+                return {"status": "error", "error": "get_abs_failed", "detail": cur}
+
+            # Prefer queried limits; fallback to known-good Insta360 Link clamp if unavailable.
+            limits = self._run_uvc_action("uvc.ptz.get_limits", {"payload": {"handle": handle, "selector": selector, "vc_interface": vc_interface, "entity_id": entity_id}, "detail": "UVC PTZ get limits"})
+            if limits.get("status") == "ok":
+                pan_min = int(limits["pan_min"])
+                pan_max = int(limits["pan_max"])
+                tilt_min = int(limits["tilt_min"])
+                tilt_max = int(limits["tilt_max"])
+            else:
+                pan_min, pan_max = -522000, 522000
+                tilt_min, tilt_max = -324000, 360000
+
+            pan_abs = int(max(pan_min, min(pan_max, int(cur["pan_abs"]) + step_pan)))
+            tilt_abs = int(max(tilt_min, min(tilt_max, int(cur["tilt_abs"]) + step_tilt)))
+            return self._run_uvc_action(
+                "uvc.ptz.set_abs",
+                {
+                    "payload": {
+                        "handle": handle,
+                        "selector": selector,
+                        "vc_interface": vc_interface,
+                        "entity_id": entity_id,
+                        "pan_abs": pan_abs,
+                        "tilt_abs": tilt_abs,
+                        "timeout_ms": timeout_ms,
+                    },
+                    "detail": f"UVC PTZ nudge pan={pan} tilt={tilt} -> abs({pan_abs},{tilt_abs})",
+                },
+            )
+
+        return {"status": "error", "error": "unknown_uvc_action"}
+
+    def _extract_rc(self, resp: Dict[str, Any]) -> Optional[int]:
+        body = resp.get("body") if isinstance(resp, dict) else None
+        if isinstance(body, dict) and "rc" in body:
+            try:
+                return int(body.get("rc"))
+            except Exception:
+                return None
+        return None
+
+    def _extract_b64(self, resp: Dict[str, Any]) -> Optional[bytes]:
+        body = resp.get("body") if isinstance(resp, dict) else None
+        if not isinstance(body, dict):
+            return None
+        data_b64 = body.get("data_b64")
+        if not isinstance(data_b64, str) or not data_b64:
+            return None
+        try:
+            return base64.b64decode(data_b64.encode("ascii"), validate=False)
+        except Exception:
+            return None
+
+    def _uvc_guess_vc_and_entity(self, handle: str, permission_id: str) -> Dict[str, Optional[int]]:
+        """
+        Best-effort guess for:
+        - vc_interface: VideoControl interface number (UVC subclass 1)
+        - entity_id: Camera Terminal ID (wTerminalType 0x0201)
+        Derived by scanning raw USB descriptors.
+        """
+        resp = self._request_json(
+            "POST",
+            "/usb/raw_descriptors",
+            {"permission_id": permission_id, "handle": handle},
+        )
+        raw = self._extract_b64(resp)
+        if not raw:
+            return {"vc_interface": None, "entity_id": None}
+
+        vc_interface: Optional[int] = None
+        entity_id: Optional[int] = None
+
+        i = 0
+        n = len(raw)
+        while i + 2 < n:
+            dlen = raw[i]
+            if dlen <= 0:
+                break
+            if i + dlen > n:
+                break
+            dtype = raw[i + 1]
+            if dtype == 0x04 and dlen >= 9:
+                # Interface descriptor: bInterfaceNumber at +2, class at +5, subclass at +6.
+                b_interface_number = raw[i + 2]
+                b_interface_class = raw[i + 5]
+                b_interface_subclass = raw[i + 6]
+                if b_interface_class == 0x0E and b_interface_subclass == 0x01:
+                    vc_interface = int(b_interface_number)
+            elif dtype == 0x24 and dlen >= 8:
+                subtype = raw[i + 2]
+                if subtype == 0x02 and dlen >= 8:
+                    # VC_INPUT_TERMINAL: bTerminalID at +3, wTerminalType at +4..+5
+                    terminal_id = raw[i + 3]
+                    w_terminal_type = int(raw[i + 4]) | (int(raw[i + 5]) << 8)
+                    if w_terminal_type == 0x0201 and entity_id is None:
+                        entity_id = int(terminal_id)
+            i += dlen
+
+        return {"vc_interface": vc_interface, "entity_id": entity_id}
 
     def _permission_profile_for_action(self, action: str) -> tuple[str, str, str]:
         a = (action or "").strip()

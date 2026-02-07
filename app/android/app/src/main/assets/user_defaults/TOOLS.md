@@ -45,6 +45,11 @@ Read the relevant doc when working in that domain:
 - `docs/permissions.md` (permission scopes and identity)
 - `examples/README.md` (copy/paste golden paths)
 
+## Source Code Fallback
+
+Kugutz is open source. If the docs are insufficient, inspect the repo as the ultimate API reference:
+`https://github.com/espresso3389/kugutz`
+
 ## Permission Requests
 
 Permissions are created via the local HTTP endpoint:

@@ -69,6 +69,15 @@ class CloudRequestTool:
             req_timeout_s = 45.0
         tool_timeout_s = max(60.0, min(300.0, req_timeout_s + 60.0))
 
+        def _with_http_status(body: Any, http_status: int) -> Dict[str, Any]:
+            if isinstance(body, dict):
+                # Preserve the existing shape (usually {status:'ok', ...}) but surface transport info.
+                if "http_status" not in body:
+                    body = dict(body)
+                    body["http_status"] = int(http_status)
+                return body
+            return {"status": "error", "error": "invalid_response", "http_status": int(http_status), "body": body}
+
         def do(pid: str) -> Dict[str, Any]:
             p = dict(payload)
             if self._identity and "identity" not in p:
@@ -84,17 +93,19 @@ class CloudRequestTool:
         body = r.get("body")
 
         if http_status == 403 and isinstance(body, dict) and body.get("status") == "permission_required":
-            # Wait indefinitely for user approval (no timeout). The UI prompt is shown by Kotlin.
-            # Once approved, retry the same request with permission_id.
+            # Default: return immediately so the agent can tell the user to approve and retry.
+            # Optional: wait for approval + auto-retry if explicitly requested.
+            if not bool(payload.get("wait_for_approval", False)):
+                return _with_http_status(body, http_status)
+
             req = body.get("request") if isinstance(body.get("request"), dict) else {}
             pid = str(req.get("id") or "").strip()
             if not pid:
-                return body
+                return _with_http_status(body, http_status)
 
             while True:
                 st = self._request_json("GET", f"/permissions/{pid}", None, timeout_s=12.0)
                 if st.get("status") != "ok":
-                    # Temporary failure; keep waiting.
                     time.sleep(1.0)
                     continue
                 perm = st.get("body") if isinstance(st.get("body"), dict) else {}
@@ -104,9 +115,9 @@ class CloudRequestTool:
                     if r2.get("status") != "ok":
                         return r2
                     b2 = r2.get("body")
-                    return b2 if isinstance(b2, dict) else {"status": "error", "error": "invalid_response", "body": b2}
+                    return _with_http_status(b2, int(r2.get("http_status") or 0))
                 if status in {"denied", "expired", "used"}:
                     return {"status": "error", "error": "permission_not_approved", "permission": perm}
                 time.sleep(1.0)
 
-        return body if isinstance(body, dict) else {"status": "error", "error": "invalid_response"}
+        return _with_http_status(body, http_status)

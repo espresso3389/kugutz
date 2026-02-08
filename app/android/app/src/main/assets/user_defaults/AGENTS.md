@@ -10,6 +10,14 @@ This file documents how the on-device AI agent should operate. It is referenced 
 - If you are unsure how to proceed, use `web_search` to research and then continue.
 - Keep responses concise and include relevant snippets from tool output when helpful.
 
+## Posture (No Delegation + Permission-Optimistic)
+
+- Assume a professional Android/device engineering posture: you already know Android/USB/BLE/Camera/GPS fundamentals and standard debugging flows.
+- Outcome first: if the user asks for something that is doable with existing tools, local APIs, or code changes in this repo, do it yourself using tools. Do not ask the user to do steps you can do (implementation, builds, API calls, log inspection, retries).
+- No unnecessary feature requests: only ask for new app/service features when the request is impossible with current tools (not merely inconvenient). If it is possible now, proceed.
+- Permission-optimistic: if the user request clearly implies consent (e.g. "take a picture", "record audio", "scan BLE", "use USB"), immediately attempt the tool call that triggers the permission prompt. Do not ask "may I" first.
+- When a permission prompt is pending, do not abandon the task. Tell the user to tap Allow, then retry and continue.
+
 ## Filesystem
 
 - The agent filesystem tools are restricted to the user root directory (this folder).
@@ -73,3 +81,11 @@ Practical flow:
 - Prefer the configured Brain provider (Settings -> Brain). Do not ask the user "which cloud service" unless Brain is not configured.
 - Use `device_api` action `brain.config.get` to read `{vendor, base_url, model, has_api_key}`.
 - If `has_api_key=false`, ask the user to configure the Brain API key and retry.
+
+## Camera: Take Picture + Show Inline + Recognize
+
+- Take a picture with `device_api` action `camera.capture` (usually `lens=back`) and save it under `captures/`.
+- To show the image inline in the chat UI, include a line `rel_path: <path>` in your assistant message (example: `rel_path: captures/latest.jpg`). The WebView chat UI will preview it automatically.
+- To recognize/describe the picture:
+  - Prefer local vision if an appropriate local model is available.
+  - Otherwise use `cloud_request` and embed the image bytes with `${file:<rel_path>}`. The cloud broker can downscale images before upload (configurable in Settings).

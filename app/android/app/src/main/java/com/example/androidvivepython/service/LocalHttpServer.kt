@@ -506,6 +506,8 @@ class LocalHttpServer(
                     JSONObject()
                         .put("status", "ok")
                         .put("auto_upload_no_confirm_mb", autoMb)
+                        // Alias for agents/configuration: same meaning as auto_upload_no_confirm_mb.
+                        .put("allow_auto_upload_payload_size_less_than_mb", autoMb)
                         .put("min_transfer_kbps", minKbps)
                         .put("image_resize_enabled", imgResizeEnabled)
                         .put("image_resize_max_dim_px", imgMaxDim)
@@ -516,7 +518,14 @@ class LocalHttpServer(
                 val body = (postBody ?: "").ifBlank { "{}" }
                 val payload = runCatching { JSONObject(body) }.getOrNull()
                     ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_json")
-                val v = payload.optDouble("auto_upload_no_confirm_mb", cloudPrefs.getFloat("auto_upload_no_confirm_mb", 1.0f).toDouble())
+                val v = when {
+                    payload.has("auto_upload_no_confirm_mb") ->
+                        payload.optDouble("auto_upload_no_confirm_mb", cloudPrefs.getFloat("auto_upload_no_confirm_mb", 1.0f).toDouble())
+                    payload.has("allow_auto_upload_payload_size_less_than_mb") ->
+                        payload.optDouble("allow_auto_upload_payload_size_less_than_mb", cloudPrefs.getFloat("auto_upload_no_confirm_mb", 1.0f).toDouble())
+                    else ->
+                        cloudPrefs.getFloat("auto_upload_no_confirm_mb", 1.0f).toDouble()
+                }
                 val clamped = v.coerceIn(0.0, 25.0)
                 val mk = payload.optDouble("min_transfer_kbps", cloudPrefs.getFloat("min_transfer_kbps", 0.0f).toDouble())
                 val mkClamped = mk.coerceIn(0.0, 50_000.0)
@@ -536,6 +545,7 @@ class LocalHttpServer(
                     JSONObject()
                         .put("status", "ok")
                         .put("auto_upload_no_confirm_mb", clamped)
+                        .put("allow_auto_upload_payload_size_less_than_mb", clamped)
                         .put("min_transfer_kbps", mkClamped)
                         .put("image_resize_enabled", imgEnabled)
                         .put("image_resize_max_dim_px", imgMaxDim)
@@ -3384,17 +3394,21 @@ class LocalHttpServer(
         // Keep this short. Detailed operational rules live in user-root docs so we can evolve them
         // without bloating the system prompt.
         return listOf(
+            "You are a senior Android device programming professional (systems-level engineer). ",
+            "You are expected to already know Android/USB/BLE/Camera/GPS basics and practical debugging techniques. ",
             "You are Kugutz Brain running on an Android device. ",
             "Your goal is to produce the user's requested outcome (artifact/state change), not to narrate steps. ",
             "You MUST use function tools for any real action (no pretending). ",
             "If you can satisfy a request by writing code/scripts, do it and execute them via tools. ",
             "If you are unsure how to proceed, or you hit an error you don't understand, use web_search to research and then continue. ",
             "If a needed device capability is not exposed by tools, say so and propose the smallest code change to add it. ",
+            "Do not delegate implementable steps back to the user (implementation/builds/api calls/log inspection); do them yourself when possible. ",
             "User-root docs (`AGENTS.md`, `TOOLS.md`) are auto-injected into your context and reloaded if they change on disk; do not repeatedly read them via filesystem tools unless the user explicitly asks. ",
+            "Prefer consulting the provided user-root docs under `docs/` and `examples/` (camera/usb/vision) before guessing tool names. ",
             "For files: use filesystem tools under the user root (not shell `ls`/`cat`). ",
             "For execution: use run_python/run_pip/run_curl only. ",
             "For cloud calls: prefer the configured Brain provider (Settings -> Brain). If Brain is not configured or has no API key, ask the user to configure it, then retry. ",
-            "Device/resource access requires explicit user approval; if permission_required, ask the user to approve in the app UI and then retry automatically (approvals are remembered for the session). ",
+            "Device/resource access requires explicit user approval; if the user request implies consent, trigger the tool call immediately to surface the permission prompt (no pre-negotiation). If permission_required, ask the user to approve in the app UI and then retry automatically (approvals are remembered for the session). ",
             "Keep responses concise: do the work first, then summarize and include relevant tool output snippets."
         ).joinToString("")
     }

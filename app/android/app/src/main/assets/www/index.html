@@ -1387,6 +1387,13 @@
         const paths = extractRelPathsFromText(rawText);
         if (!paths.length) return;
 
+        // Avoid duplicating attachment cards when the same bubble is re-rendered/upgraded
+        // by polling/rotation recovery.
+        try {
+          const old = msgDiv.querySelector(".attach-wrap");
+          if (old) old.remove();
+        } catch (_) {}
+
         const wrap = document.createElement("div");
         wrap.className = "attach-wrap";
 
@@ -1444,32 +1451,40 @@
               if (kind === "image") {
                 const img = document.createElement("img");
                 img.alt = p;
+                img.loading = "lazy";
                 img.src = src;
                 img.dataset.relPath = p;
                 img.style.cursor = "zoom-in";
-                img.addEventListener("click", () => {
-                  try { openViewerFor(p); } catch (_) {}
+                const open = () => { try { openViewerFor(p); } catch (_) {} };
+                img.addEventListener("click", open);
+                card.addEventListener("click", (ev) => {
+                  // Don't steal clicks from the Share icon.
+                  if (ev.target && (ev.target.closest && ev.target.closest(".attach-icon-btn"))) return;
+                  open();
                 });
+                img.addEventListener("error", () => { hint.textContent = "Preview failed"; });
                 body.appendChild(img);
-                hint.textContent = "Image";
+                hint.textContent = "Image (tap to zoom)";
               } else if (kind === "video") {
                 const v = document.createElement("video");
                 v.controls = true;
                 v.playsInline = true;
+                v.preload = "metadata";
                 v.src = src;
                 body.appendChild(v);
                 hint.textContent = "Video";
               } else if (kind === "audio") {
                 const a = document.createElement("audio");
                 a.controls = true;
+                a.preload = "metadata";
                 a.src = src;
                 body.appendChild(a);
                 hint.textContent = "Audio";
               } else {
-                hint.textContent = "No inline preview for this file type. Tap Open.";
+                hint.textContent = "No inline preview for this file type.";
               }
             } catch (e) {
-              hint.textContent = "Preview failed. Tap to retry.";
+              hint.textContent = "Preview failed.";
             }
           })();
         }

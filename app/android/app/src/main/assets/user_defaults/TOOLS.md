@@ -57,6 +57,24 @@ Example:
 
 On success, the response includes `rel_path` (like `captures/latest.jpg`). Prefer `rel_path` for any filesystem tools and for `vision.image.load`.
 
+### UVC Quickstart (Insta360 Link / USB Webcam)
+
+If a UVC camera is connected over USB (e.g. Insta360 Link), capture a single MJPEG frame with:
+
+```json
+{
+  "type": "tool_invoke",
+  "tool": "device_api",
+  "args": {
+    "action": "uvc.mjpeg.capture",
+    "payload": { "handle": "<usb_handle>", "width": 1280, "height": 720, "fps": 30, "path": "captures/uvc_latest.jpg" },
+    "detail": "Capture one MJPEG frame from UVC camera"
+  }
+}
+```
+
+Then include `rel_path: captures/uvc_latest.jpg` in your assistant message to preview it inline.
+
 ### Show Media Inline In Chat (Required)
 
 The WebView chat UI auto-renders media previews when a message contains one or more lines like:
@@ -79,6 +97,7 @@ To fetch the image onto your dev machine, use the local file endpoint (permissio
 Read the relevant doc when working in that domain:
 - `docs/vision.md` (RGBA8888 + TFLite)
 - `docs/usb.md` (USB/UVC control + streaming)
+- `docs/uvc.md` (UVC MJPEG capture + PTZ)
 - `docs/camera.md` (CameraX still capture + preview stream)
 - `docs/ble.md` (BLE scanning + GATT)
 - `docs/tts.md` (Android TextToSpeech)

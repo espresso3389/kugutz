@@ -309,6 +309,8 @@
         background: var(--ink-muted);
         animation: thinking 1.2s infinite;
       }
+      .thinking-dots.mini span { width: 5px; height: 5px; }
+      .msg-working { margin-top: 8px; }
       .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
       .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
       @keyframes thinking {
@@ -1690,11 +1692,17 @@
           if (!raw) return;
           const parsed = JSON.parse(raw);
           if (!Array.isArray(parsed)) return;
+          // Keep meta/ts so we can de-dupe/upgrade by item_id after rotation.
           conversation = parsed.filter(m =>
             m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string"
-          );
+          ).map(m => ({
+            role: m.role,
+            content: m.content,
+            meta: (m.meta && typeof m.meta === "object") ? m.meta : {},
+            ts: Number(m.ts || 0) || 0,
+          }));
           for (const msg of conversation) {
-            addMsg(msg.role, msg.content);
+            addMsg(msg.role, msg.content, Object.assign({}, msg.meta || {}, { _ts: msg.ts || 0 }));
           }
         } catch (_) {}
       }
@@ -1735,6 +1743,48 @@
         return div;
       }
 
+      function setMsgWorking(div, working) {
+        if (!div) return;
+        const existing = div.querySelector(".msg-working");
+        if (!working) {
+          if (existing) existing.remove();
+          return;
+        }
+        if (existing) return;
+        const w = document.createElement("div");
+        w.className = "msg-working";
+        w.innerHTML = '<div class="thinking-dots mini"><span></span><span></span><span></span></div>';
+        div.appendChild(w);
+      }
+
+      function markWorkingByItemId(itemId) {
+        if (!itemId) return;
+        const div = findRenderedByItem("assistant", itemId);
+        if (div) setMsgWorking(div, true);
+      }
+
+      function clearWorkingByItemId(itemId) {
+        if (!itemId) return;
+        const div = findRenderedByItem("assistant", itemId);
+        if (div) setMsgWorking(div, false);
+      }
+
+      function upsertConversationEntry(role, itemId, text, meta, ts) {
+        if (!itemId) return;
+        const rid = String(itemId);
+        for (let i = conversation.length - 1; i >= 0; i--) {
+          const m = conversation[i];
+          const mi = m && m.meta ? (m.meta.item_id || m.meta.itemId || "") : "";
+          if (m && m.role === role && String(mi) === rid) {
+            m.content = text;
+            m.meta = Object.assign({}, m.meta || {}, meta || {});
+            if (ts) m.ts = ts;
+            return;
+          }
+        }
+        conversation.push({ role, content: text, meta: meta || {}, ts: ts || Date.now() });
+      }
+
       function addThinkingIndicator() {
         if (chatWelcome.parentNode) chatWelcome.remove();
         const shouldScroll = isNearBottom(chatMessages, 140);
@@ -1754,17 +1804,39 @@
           const list = Array.isArray(data.messages) ? data.messages : [];
           const rebuilt = [];
           let maxTs = 0;
+          // Track tool activity to restore working indicators after rotation.
+          const lastToolTsByItem = new Map();
+          const lastAssistantTsByItem = new Map();
           for (const msg of list) {
-            if (!msg || (msg.role !== "user" && msg.role !== "assistant")) continue;
+            if (!msg) continue;
+            const role = msg.role;
             if (typeof msg.text !== "string" || !msg.text.trim()) continue;
             maxTs = Math.max(maxTs, Number(msg.ts || 0));
-            rebuilt.push({ role: msg.role, content: msg.text, meta: msg.meta || {}, ts: Number(msg.ts || 0) });
+            const meta = (msg.meta && typeof msg.meta === "object") ? msg.meta : {};
+            const itemId = meta.item_id || meta.itemId || "";
+            const ts = Number(msg.ts || 0) || 0;
+            if (role === "tool" && itemId) {
+              const cur = Number(lastToolTsByItem.get(itemId) || 0);
+              if (ts > cur) lastToolTsByItem.set(itemId, ts);
+              continue;
+            }
+            if (role === "assistant" && itemId) {
+              const cur = Number(lastAssistantTsByItem.get(itemId) || 0);
+              if (ts > cur) lastAssistantTsByItem.set(itemId, ts);
+            }
+            if (role !== "user" && role !== "assistant") continue;
+            rebuilt.push({ role: role, content: msg.text, meta: meta, ts: ts });
           }
           if (!rebuilt.length) return;
           lastServerTs = Math.max(lastServerTs, maxTs);
           conversation = rebuilt.slice(-200).map(m => ({ role: m.role, content: m.content, meta: m.meta || {}, ts: m.ts || 0 }));
           chatMessages.textContent = "";
           for (const msg of conversation) addMsg(msg.role, msg.content, Object.assign({}, msg.meta || {}, { _ts: msg.ts || 0 }));
+          // Restore working indicators for items that have tool activity after the last assistant bubble.
+          for (const [itemId, tTs] of lastToolTsByItem.entries()) {
+            const aTs = Number(lastAssistantTsByItem.get(itemId) || 0);
+            if (tTs > aTs) markWorkingByItemId(itemId);
+          }
           saveConversation();
         } catch (_) {}
       }
@@ -1789,7 +1861,7 @@
           const list = Array.isArray(data.messages) ? data.messages : [];
           let maxTs = lastServerTs;
           for (const msg of list) {
-            if (!msg || (msg.role !== "user" && msg.role !== "assistant")) continue;
+            if (!msg) continue;
             const text = (typeof msg.text === "string") ? msg.text.trim() : "";
             if (!text) continue;
             const ts = Number(msg.ts || 0);
@@ -1799,6 +1871,12 @@
 
             // De-dupe: if we already rendered this item_id bubble locally, upgrade it instead of appending.
             const itemId = meta.item_id || "";
+            if (msg.role === "tool") {
+              // Tool messages are not rendered, but they indicate the agent is actively working.
+              if (itemId) markWorkingByItemId(itemId);
+              continue;
+            }
+            if (msg.role !== "user" && msg.role !== "assistant") continue;
             if (itemId) {
               const existing = findRenderedByItem(msg.role, itemId);
               if (existing) {
@@ -1807,12 +1885,26 @@
                 if (msg.role === "assistant" && existing.querySelector(".thinking-dots")) {
                   existing.innerHTML = renderMarkdown(text);
                 }
+                // Always refresh attachments and persist upgraded content for rotation recovery.
+                try { renderInlineAttachments(existing, text); } catch (_) {}
+                upsertConversationEntry(msg.role, itemId, text, meta, ts);
+                if (msg.role === "assistant") clearWorkingByItemId(itemId);
+                // Permission resume events: show working indicator for the resumed item id.
+                try {
+                  const rid = (meta && (meta.resume_item_id || meta.resumeItemId)) ? String(meta.resume_item_id || meta.resumeItemId) : "";
+                  if (rid) markWorkingByItemId(rid);
+                } catch (_) {}
                 continue;
               }
             }
 
             addMsg(msg.role, text, Object.assign({}, meta, { _ts: ts }));
             conversation.push({ role: msg.role, content: text, meta: meta, ts: ts });
+            if (msg.role === "assistant" && itemId) clearWorkingByItemId(itemId);
+            try {
+              const rid = (meta && (meta.resume_item_id || meta.resumeItemId)) ? String(meta.resume_item_id || meta.resumeItemId) : "";
+              if (rid) markWorkingByItemId(rid);
+            } catch (_) {}
           }
           if (maxTs > lastServerTs) {
             lastServerTs = maxTs;
@@ -1852,7 +1944,7 @@
         }
         const previewText = previewLines.join("\n");
 
-        conversation.push({ role: "user", content: previewText });
+        conversation.push({ role: "user", content: previewText, meta: { local_echo: true }, ts: Date.now() });
         saveConversation();
         const uDiv = addMsg("user", previewText, { local_echo: true, uploading: hasAtt });
 
@@ -1903,6 +1995,17 @@
             if (uDiv) uDiv.dataset.itemId = String(itemId);
             aDiv.dataset.itemId = String(itemId);
           } catch (_) {}
+          // Persist item_id on the local-echo user message so it survives rotation and can be upgraded.
+          try {
+            for (let i = conversation.length - 1; i >= 0; i--) {
+              const m = conversation[i];
+              if (m && m.role === "user" && m.meta && m.meta.local_echo && !m.meta.item_id) {
+                m.meta.item_id = String(itemId);
+                break;
+              }
+            }
+            saveConversation();
+          } catch (_) {}
 
           const answer = await waitForAgentReply(itemId);
           if (!answer) {
@@ -1913,6 +2016,8 @@
 
           if (cleaned) {
             aDiv.innerHTML = renderMarkdown(cleaned);
+            try { renderInlineAttachments(aDiv, cleaned); } catch (_) {}
+            setMsgWorking(aDiv, false);
             conversation.push({ role: "assistant", content: cleaned, meta: { item_id: itemId }, ts: Date.now() });
             saveConversation();
           } else {

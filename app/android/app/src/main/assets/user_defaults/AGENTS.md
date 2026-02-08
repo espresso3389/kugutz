@@ -89,3 +89,10 @@ Practical flow:
 - To recognize/describe the picture:
   - Prefer local vision if an appropriate local model is available.
   - Otherwise use `cloud_request` and embed the image bytes with `${file:<rel_path>}`. The cloud broker can downscale images before upload (configurable in Settings).
+
+## UVC (USB Webcam): Capture + PTZ
+
+- If a UVC webcam is connected over USB, use `usb.list` -> `usb.open` to get a `handle`.
+- Capture a frame using `device_api` action `uvc.mjpeg.capture` (saves a JPEG under `captures/`).
+- PTZ controls for compatible cameras use `uvc.ptz.*` actions.
+- Always include `rel_path: <path>` so the UI previews the captured image inline.

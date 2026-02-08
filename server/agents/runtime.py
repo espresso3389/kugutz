@@ -792,10 +792,23 @@ class BrainRuntime:
                 sid = str(state.get("session_id") or "default").strip() or "default"
                 waiting_tool = str(state.get("tool") or tool or "unknown").strip()
                 if status == "approved":
+                    resume_item_id = ""
+                    try:
+                        resume_item_id = str((state.get("item") or {}).get("id") or "").strip()
+                    except Exception:
+                        resume_item_id = ""
                     self._record_message(
                         "assistant",
                         f"Permission approved for '{waiting_tool}'. Continuing.",
-                        {"item_id": item.get("id"), "session_id": sid, "actor": "system"},
+                        {
+                            "item_id": item.get("id"),
+                            "session_id": sid,
+                            "actor": "system",
+                            # Let the UI show a working indicator tied to the paused chat item.
+                            "resume_item_id": resume_item_id,
+                            "permission_id": pid,
+                            "permission_tool": waiting_tool,
+                        },
                     )
                     cfg = self.get_config()
                     provider_url = str(cfg.get("provider_url") or "").strip()
@@ -813,7 +826,14 @@ class BrainRuntime:
                 self._record_message(
                     "assistant",
                     f"Permission {status or 'resolved'} for '{waiting_tool}'. I can't continue this step without it.",
-                    {"item_id": item.get("id"), "session_id": sid, "actor": "system"},
+                    {
+                        "item_id": item.get("id"),
+                        "session_id": sid,
+                        "actor": "system",
+                        "resume_item_id": str((state.get("item") or {}).get("id") or "").strip(),
+                        "permission_id": pid,
+                        "permission_tool": waiting_tool,
+                    },
                 )
                 self._emit_log("brain_item_done", {"id": item.get("id"), "actions": "permission_denied"})
                 return

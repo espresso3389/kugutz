@@ -1124,41 +1124,12 @@ class LocalHttpServer(
                 serveUiFile(decoded)
             }
             uri == "/user/list" && session.method == Method.GET -> {
-                val ok = ensureDevicePermission(
-                    session,
-                    JSONObject(),
-                    tool = "device.files",
-                    capability = "files",
-                    detail = "List user files"
-                )
-                if (!ok.first) return ok.second!!
                 handleUserList(session)
             }
             uri == "/user/file" && session.method == Method.GET -> {
-                val rel = firstParam(session, "path")
-                val ok = ensureDevicePermission(
-                    session,
-                    JSONObject(),
-                    tool = "device.files",
-                    capability = "files",
-                    detail = ("Read user file: " + rel).take(180)
-                )
-                if (!ok.first) return ok.second!!
                 serveUserFile(session)
             }
             uri == "/user/upload" && session.method == Method.POST -> {
-                val name = firstParam(session, "name")
-                val dir = (firstParam(session, "dir").ifBlank { firstParam(session, "path") })
-                val detail = ("Upload user file: " + (if (dir.isBlank()) name else (dir.trimEnd('/') + "/" + name))).take(180)
-                val ok = ensureDevicePermission(
-                    session,
-                    // Upload is multipart; allow passing permission_id as query/form param for one-off calls.
-                    JSONObject().put("permission_id", firstParam(session, "permission_id")),
-                    tool = "device.files",
-                    capability = "files",
-                    detail = detail
-                )
-                if (!ok.first) return ok.second!!
                 handleUserUpload(session)
             }
             else -> notFound()

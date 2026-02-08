@@ -1404,12 +1404,6 @@
             ev.preventDefault();
             ev.stopPropagation();
             try {
-              await requestPermission("device.files", "Share user file: " + p);
-            } catch (_) {
-              showToast("File permission required", 1600);
-              return;
-            }
-            try {
               if (typeof AndroidBridge !== "undefined" && AndroidBridge.shareUserFile) {
                 AndroidBridge.shareUserFile(p, mimeForPath(p));
               } else {
@@ -1437,7 +1431,6 @@
 
           (async () => {
             try {
-              await requestPermission("device.files", "Preview user file: " + p);
               const src = API + "/user/file?path=" + encodeURIComponent(p);
               if (kind === "image") {
                 const img = document.createElement("img");
@@ -1467,7 +1460,7 @@
                 hint.textContent = "No inline preview for this file type. Tap Open.";
               }
             } catch (e) {
-              hint.textContent = "Preview blocked (permission required). Tap Open.";
+              hint.textContent = "Preview failed. Tap to retry.";
             }
           })();
         }
@@ -1523,12 +1516,6 @@
         const rel = safeRelPath(p);
         if (!rel) return;
         viewerTitle.textContent = rel;
-        try {
-          await requestPermission("device.files", "Preview user file: " + rel);
-        } catch (_) {
-          showToast("File permission required", 1600);
-          return;
-        }
         viewerImg.src = API + "/user/file?path=" + encodeURIComponent(rel);
         viewerImg.alt = rel;
         resetViewerTransform();
@@ -1563,12 +1550,6 @@
         const p = viewerTitle.textContent || "";
         const rel = safeRelPath(p);
         if (!rel) return;
-        try {
-          await requestPermission("device.files", "Share user file: " + rel);
-        } catch (_) {
-          showToast("File permission required", 1600);
-          return;
-        }
         try {
           if (typeof AndroidBridge !== "undefined" && AndroidBridge.shareUserFile) {
             AndroidBridge.shareUserFile(rel, mimeForPath(rel));
@@ -2031,15 +2012,6 @@
         renderComposerAttachments();
 
         const rels = [];
-        try {
-          await requestPermission("device.files", "Upload attachments");
-        } catch (_) {
-          showToast("File permission required", 1600);
-          uploadBusy = false;
-          chatSend.disabled = false;
-          return (text || "") + (text ? "\n" : "") + "(attachment upload blocked: permission_required)";
-        }
-
         for (const a of items) {
           try {
             const fd = new FormData();

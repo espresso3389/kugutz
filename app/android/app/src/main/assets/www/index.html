@@ -1750,6 +1750,9 @@
           if (existing) existing.remove();
           return;
         }
+        // If this bubble is already the dedicated thinking placeholder (has dots),
+        // don't add a second set of dots.
+        if (div.querySelector(".thinking-dots")) return;
         if (existing) return;
         const w = document.createElement("div");
         w.className = "msg-working";

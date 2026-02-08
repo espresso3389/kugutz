@@ -284,14 +284,26 @@ class MainActivity : AppCompatActivity() {
             val m = r.find(s) ?: return null
             return try { m.groupValues[1].toInt() } catch (_: Exception) { null }
         }
+        fun mIntLoose(key: String): Int? {
+            // Also match patterns like: vid=1234, vendor_id=1234
+            val r = Regex("(^|\\W)" + Regex.escape(key) + "\\s*=\\s*(\\d+)(\\W|$)")
+            val m = r.find(s) ?: return null
+            return try { m.groupValues[2].toInt() } catch (_: Exception) { null }
+        }
         fun mStr(key: String): String? {
             val r = Regex("\"" + Regex.escape(key) + "\"\\s*:\\s*\"([^\"]+)\"")
             val m = r.find(s) ?: return null
             return m.groupValues[1]
         }
-        val name = mStr("name")?.trim()?.ifBlank { null }
-        val vid = mInt("vendor_id")
-        val pid = mInt("product_id")
+        fun mStrLoose(key: String): String? {
+            // Match: name=/dev/bus/usb/..., name = ...
+            val r = Regex("(^|\\W)" + Regex.escape(key) + "\\s*=\\s*([^\\s,;]+)")
+            val m = r.find(s) ?: return null
+            return m.groupValues[2]
+        }
+        val name = (mStr("name") ?: mStrLoose("name"))?.trim()?.ifBlank { null }
+        val vid = mInt("vendor_id") ?: mIntLoose("vendor_id") ?: mIntLoose("vid")
+        val pid = mInt("product_id") ?: mIntLoose("product_id") ?: mIntLoose("pid")
         return Triple(name, vid, pid)
     }
 

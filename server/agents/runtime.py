@@ -1204,19 +1204,40 @@ class BrainRuntime:
                 # Keep instructions on every round; some models drift once the tool loop begins.
                 "instructions": system_prompt,
             }
+            # When tool_policy is required for this user request, ask the provider to enforce
+            # tool calling at the API level as well (prevents "pretend tool results").
+            if tool_required_unsatisfied:
+                body["tool_choice"] = "required"
             if previous_response_id:
                 body["previous_response_id"] = previous_response_id
 
-            resp = requests.post(
-                provider_url,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                data=json.dumps(body),
-                timeout=40,
-            )
-            resp.raise_for_status()
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            try:
+                resp = requests.post(
+                    provider_url,
+                    headers=headers,
+                    data=json.dumps(body),
+                    timeout=40,
+                )
+                resp.raise_for_status()
+            except Exception:
+                # Some non-OpenAI providers (or older gateways) may not support tool_choice.
+                # If we were forcing tool calls, retry once without tool_choice before failing.
+                if "tool_choice" in body:
+                    body2 = dict(body)
+                    body2.pop("tool_choice", None)
+                    resp = requests.post(
+                        provider_url,
+                        headers=headers,
+                        data=json.dumps(body2),
+                        timeout=40,
+                    )
+                    resp.raise_for_status()
+                else:
+                    raise
             payload = resp.json()
             previous_response_id = payload.get("id")
 
@@ -1821,7 +1842,15 @@ class BrainRuntime:
             req = args.get("request")
             if not isinstance(req, dict):
                 return {"status": "error", "error": "invalid_request"}
-            return self._tool_invoke("cloud_request", {"request": req, "identity": self._active_identity}, None, "cloud_request")
+            # Route via _execute_action so the tool invocation + result is audit-logged into the
+            # session timeline (role=tool), same as device_api/run_* helpers.
+            action = {
+                "type": "tool_invoke",
+                "tool": "cloud_request",
+                "args": {"request": req, "identity": self._active_identity},
+                "detail": "cloud_request",
+            }
+            return self._execute_action(item, action)
         if name == "write_file":
             action = {
                 "type": "write_file",

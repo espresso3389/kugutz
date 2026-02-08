@@ -1224,8 +1224,20 @@
           $("braveSearchApiKey").placeholder = "(locked)";
           return;
         }
+        function currentBrainKeyContext() {
+          const preset = getSelectedPreset ? getSelectedPreset() : null;
+          if (!preset) return { vendor: "", base_url: "" };
+          if (preset.vendor === "custom") {
+            return { vendor: "custom", base_url: String($("brainBaseUrl").value || "").trim() };
+          }
+          return { vendor: String(preset.vendor || ""), base_url: String(preset.base_url || "") };
+        }
         try {
-          if (typeof AndroidBridge !== "undefined" && AndroidBridge.getBrainApiKeyPlain) {
+          const ctx = currentBrainKeyContext();
+          if (typeof AndroidBridge !== "undefined" && AndroidBridge.getBrainApiKeyFor) {
+            $("brainApiKey").value = AndroidBridge.getBrainApiKeyFor(ctx.vendor, ctx.base_url) || "";
+            $("brainApiKey").placeholder = "";
+          } else if (typeof AndroidBridge !== "undefined" && AndroidBridge.getBrainApiKeyPlain) {
             $("brainApiKey").value = AndroidBridge.getBrainApiKeyPlain() || "";
             $("brainApiKey").placeholder = "";
           }
@@ -2354,6 +2366,8 @@
       brainSelect.addEventListener("change", () => {
         const p = getSelectedPreset();
         brainCustom.style.display = (p && p.vendor === "custom") ? "block" : "none";
+        // Update the key field to the key remembered for the newly selected provider.
+        try { refreshSecretsFromBridge(); } catch (_) {}
       });
 
       async function loadBrainConfig() {
@@ -2384,6 +2398,8 @@
           } else {
             brainCustom.style.display = "none";
           }
+          // Ensure the key field reflects the currently selected provider.
+          try { refreshSecretsFromBridge(); } catch (_) {}
         } catch (_) {}
       }
 
@@ -2411,7 +2427,9 @@
 
         try {
           try {
-            if (typeof AndroidBridge !== "undefined" && AndroidBridge.setBrainApiKeyPlain) {
+            if (typeof AndroidBridge !== "undefined" && AndroidBridge.setBrainApiKeyFor) {
+              AndroidBridge.setBrainApiKeyFor(String(payload.vendor || ""), String(payload.base_url || ""), apiKey);
+            } else if (typeof AndroidBridge !== "undefined" && AndroidBridge.setBrainApiKeyPlain) {
               AndroidBridge.setBrainApiKeyPlain(apiKey);
             }
           } catch (_) {}

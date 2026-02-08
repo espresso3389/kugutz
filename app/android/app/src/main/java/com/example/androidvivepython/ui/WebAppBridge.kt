@@ -14,6 +14,8 @@ import jp.espresso3389.kugutz.perm.CredentialStore
 import jp.espresso3389.kugutz.service.AgentService
 import java.io.File
 import java.net.URLConnection
+import java.security.MessageDigest
+import java.util.Locale
 
 class WebAppBridge(private val activity: MainActivity) {
     private val handler = Handler(Looper.getMainLooper())
@@ -160,13 +162,70 @@ class WebAppBridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun getBrainApiKeyPlain(): String {
         if (getSettingsUnlockRemainingMs() <= 0) return ""
-        return brainPrefs.getString("api_key", "")?.trim().orEmpty()
+        val vendor = brainPrefs.getString("vendor", "") ?: ""
+        val baseUrl = brainPrefs.getString("base_url", "") ?: ""
+        return getBrainApiKeyFor(vendor, baseUrl)
     }
 
     @JavascriptInterface
     fun setBrainApiKeyPlain(value: String) {
         if (getSettingsUnlockRemainingMs() <= 0) return
-        brainPrefs.edit().putString("api_key", value.trim()).apply()
+        // Back-compat: set for the currently selected vendor/base_url.
+        val vendor = brainPrefs.getString("vendor", "") ?: ""
+        val baseUrl = brainPrefs.getString("base_url", "") ?: ""
+        setBrainApiKeyFor(vendor, baseUrl, value)
+    }
+
+    private fun sanitizeVendor(vendor: String): String {
+        val v = vendor.trim().lowercase(Locale.US)
+        if (v.isBlank()) return "custom"
+        return v.replace(Regex("[^a-z0-9_\\-]"), "_")
+    }
+
+    private fun shortHashHex(s: String): String {
+        return try {
+            val dig = MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
+            dig.take(6).joinToString("") { b -> "%02x".format(b) } // 12 hex chars
+        } catch (_: Exception) {
+            // Fall back to hashCode if MessageDigest is unavailable (shouldn't happen).
+            val h = s.hashCode().toUInt().toString(16)
+            h.padStart(12, '0').take(12)
+        }
+    }
+
+    private fun keySlotFor(vendor: String, baseUrl: String): String {
+        val v = sanitizeVendor(vendor)
+        val b = baseUrl.trim().trimEnd('/').lowercase(Locale.US)
+        val hx = shortHashHex(v + "|" + b)
+        return "api_key_for_${v}_${hx}"
+    }
+
+    @JavascriptInterface
+    fun getBrainApiKeyFor(vendor: String, baseUrl: String): String {
+        if (getSettingsUnlockRemainingMs() <= 0) return ""
+        val slot = keySlotFor(vendor, baseUrl)
+        val v = brainPrefs.getString(slot, "")?.trim().orEmpty()
+        if (v.isNotBlank()) return v
+        // Fallback to active key if slot doesn't exist yet (backward compatibility).
+        return brainPrefs.getString("api_key", "")?.trim().orEmpty()
+    }
+
+    @JavascriptInterface
+    fun setBrainApiKeyFor(vendor: String, baseUrl: String, value: String) {
+        if (getSettingsUnlockRemainingMs() <= 0) return
+        val key = value.trim()
+        val slot = keySlotFor(vendor, baseUrl)
+        val e = brainPrefs.edit()
+        e.putString(slot, key)
+        // Also update the currently active key if this matches the active vendor/base_url.
+        val curVendor = (brainPrefs.getString("vendor", "") ?: "").trim()
+        val curBase = (brainPrefs.getString("base_url", "") ?: "").trim().trimEnd('/')
+        if (curVendor.equals(vendor.trim(), ignoreCase = true) &&
+            curBase.equals(baseUrl.trim().trimEnd('/'), ignoreCase = true)
+        ) {
+            e.putString("api_key", key)
+        }
+        e.apply()
     }
 
     @JavascriptInterface

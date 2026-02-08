@@ -50,6 +50,8 @@ import android.util.Base64
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
+import java.util.Locale
 
 class LocalHttpServer(
     private val context: Context,
@@ -4044,22 +4046,62 @@ class LocalHttpServer(
         )
     }
 
+    private fun sanitizeVendor(vendor: String): String {
+        val v = vendor.trim().lowercase(Locale.US)
+        if (v.isBlank()) return "custom"
+        return v.replace(Regex("[^a-z0-9_\\-]"), "_")
+    }
+
+    private fun shortHashHex(s: String): String {
+        return try {
+            val dig = MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
+            dig.take(6).joinToString("") { b -> "%02x".format(b) } // 12 hex chars
+        } catch (_: Exception) {
+            val h = s.hashCode().toUInt().toString(16)
+            h.padStart(12, '0').take(12)
+        }
+    }
+
+    private fun brainKeySlotFor(vendor: String, baseUrl: String): String {
+        val v = sanitizeVendor(vendor)
+        val b = baseUrl.trim().trimEnd('/').lowercase(Locale.US)
+        val hx = shortHashHex(v + "|" + b)
+        return "api_key_for_${v}_${hx}"
+    }
+
     private fun handleBrainConfigSet(body: String): Response {
         val payload = runCatching { JSONObject(body) }.getOrNull()
             ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_json")
+        val beforeVendor = (brainPrefs.getString("vendor", "") ?: "").trim()
+        val beforeBase = (brainPrefs.getString("base_url", "") ?: "").trim().trimEnd('/')
+
+        val afterVendor = if (payload.has("vendor")) payload.optString("vendor", "").trim() else beforeVendor
+        val afterBase = if (payload.has("base_url")) payload.optString("base_url", "").trim().trimEnd('/') else beforeBase
+
         val editor = brainPrefs.edit()
-        if (payload.has("vendor")) {
-            editor.putString("vendor", payload.optString("vendor", "").trim())
+        if (payload.has("vendor")) editor.putString("vendor", afterVendor)
+        if (payload.has("base_url")) editor.putString("base_url", afterBase)
+        if (payload.has("model")) editor.putString("model", payload.optString("model", "").trim())
+
+        val vendorChanged = !beforeVendor.equals(afterVendor, ignoreCase = true)
+        val baseChanged = !beforeBase.equals(afterBase, ignoreCase = true)
+        val apiKeyProvided = payload.has("api_key")
+
+        if (apiKeyProvided) {
+            val key = payload.optString("api_key", "").trim()
+            editor.putString("api_key", key)
+            // Store per-provider key (vendor + base_url) so switching presets restores it.
+            val slot = brainKeySlotFor(afterVendor, afterBase)
+            editor.putString(slot, key)
+        } else if (vendorChanged || baseChanged) {
+            // If switching provider without specifying a key, restore any previously saved key for that provider.
+            val slot = brainKeySlotFor(afterVendor, afterBase)
+            val restored = (brainPrefs.getString(slot, "") ?: "").trim()
+            if (restored.isNotBlank()) {
+                editor.putString("api_key", restored)
+            }
         }
-        if (payload.has("base_url")) {
-            editor.putString("base_url", payload.optString("base_url", "").trim().trimEnd('/'))
-        }
-        if (payload.has("model")) {
-            editor.putString("model", payload.optString("model", "").trim())
-        }
-        if (payload.has("api_key")) {
-            editor.putString("api_key", payload.optString("api_key", "").trim())
-        }
+
         editor.apply()
         return handleBrainConfigGet()
     }

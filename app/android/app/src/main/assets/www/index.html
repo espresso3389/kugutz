@@ -1367,8 +1367,14 @@
         }
 
         // Plain: rel_path: captures/foo.jpg
-        const rePlain = /\brel_path\b\s*[:=]\s*([^\s"'`<>\]]+)/gi;
-        while ((m = rePlain.exec(t)) !== null) {
+        // Also support spaces by capturing to end-of-line (common for uploaded filenames like "Slack - Ding.mp3").
+        const rePlainQuoted = /\brel_path\b\s*[:=]\s*`([^`]+)`/gi;
+        while ((m = rePlainQuoted.exec(t)) !== null) {
+          const p = safeRelPath(m[1]);
+          if (p && !seen.has(p)) { out.push(p); seen.add(p); }
+        }
+        const rePlainEol = /\brel_path\b\s*[:=]\s*([^\r\n]+)/gi;
+        while ((m = rePlainEol.exec(t)) !== null) {
           const p = safeRelPath(m[1]);
           if (p && !seen.has(p)) { out.push(p); seen.add(p); }
         }

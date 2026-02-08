@@ -128,6 +128,103 @@ class ResponsesToolLoopTest(unittest.TestCase):
         finally:
             rt.requests.post = original_post
 
+    def test_tool_output_truncated_for_large_read_file(self):
+        server_dir = Path(__file__).resolve().parents[1]
+        if str(server_dir) not in sys.path:
+            sys.path.insert(0, str(server_dir))
+        from agents import runtime as rt
+
+        storage = _FakeStorage()
+        post_calls = []
+
+        def emit_log(event: str, data: dict):
+            return None
+
+        def shell_exec(cmd: str, args: str, cwd: str):
+            return {"status": "ok", "code": 0, "output": "OK\n"}
+
+        def tool_invoke(tool: str, args: dict, request_id, detail: str):
+            return {"status": "ok", "tool": tool, "args": args, "detail": detail}
+
+        os.environ["OPENAI_API_KEY"] = "sk-test-env"
+
+        def fake_post(url, headers=None, data=None, timeout=None):
+            body = json.loads(data or "{}")
+            post_calls.append({"url": url, "headers": dict(headers or {}), "body": body})
+            call_idx = len(post_calls)
+            if call_idx == 1:
+                payload = {
+                    "id": "resp_1",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "read_file",
+                            "call_id": "call_1",
+                            "arguments": json.dumps({"path": "large.txt", "max_bytes": 2000000}),
+                        }
+                    ],
+                }
+            else:
+                payload = {
+                    "id": "resp_2",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "Done."}],
+                        }
+                    ],
+                }
+
+            class _Resp:
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return payload
+
+            return _Resp()
+
+        original_post = rt.requests.post
+        rt.requests.post = fake_post
+        try:
+            user_dir = Path("/tmp/kugutz-test-user-truncate")
+            user_dir.mkdir(parents=True, exist_ok=True)
+
+            big = ("A" * 50000) + "\n" + ("B" * 50000) + "\n"
+            (user_dir / "large.txt").write_text(big, encoding="utf-8")
+
+            brain = rt.BrainRuntime(
+                user_dir=user_dir,
+                storage=storage,
+                emit_log=emit_log,
+                shell_exec=shell_exec,
+                tool_invoke=tool_invoke,
+            )
+            brain.update_config(
+                {
+                    "enabled": True,
+                    "model": "gpt-test",
+                    "provider_url": "https://api.openai.com/v1/responses",
+                    "api_key_credential": "openai_api_key",
+                    # Make truncation definitely kick in even for moderate outputs.
+                    "max_tool_output_chars": 4000,
+                }
+            )
+
+            item = {"id": "chat_3", "kind": "chat", "text": "Read the file", "meta": {}, "created_at": 0}
+            brain._process_with_responses_tools(item)
+
+            self.assertGreaterEqual(len(post_calls), 2)
+            input2 = post_calls[1]["body"].get("input") or []
+            fco = next((x for x in input2 if isinstance(x, dict) and x.get("type") == "function_call_output"), None)
+            self.assertIsNotNone(fco)
+            out = json.loads(fco.get("output") or "{}")
+            self.assertIn("content", out)
+            self.assertTrue(out.get("truncated_for_model") or "[truncated_for_model]" in (out.get("content") or ""))
+            self.assertLessEqual(len(out.get("content") or ""), 5000)
+        finally:
+            rt.requests.post = original_post
+
     def test_tool_policy_required_forces_function_call_when_model_returns_text_only(self):
         server_dir = Path(__file__).resolve().parents[1]
         if str(server_dir) not in sys.path:

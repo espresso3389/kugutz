@@ -1435,7 +1435,7 @@ class BrainRuntime:
                     {
                         "type": "function_call_output",
                         "call_id": call_id,
-                        "output": json.dumps(result),
+                        "output": json.dumps(self._truncate_tool_output_for_model(name, result)),
                     }
                 )
             # Nudge the model to stop once it has enough information.
@@ -1541,6 +1541,104 @@ class BrainRuntime:
         )
         self._emit_log("brain_response", {"item_id": item.get("id"), "text": "tool_loop_exhausted"})
         return
+
+    def _truncate_tool_output_for_model(self, tool_name: str, result: Any) -> Any:
+        """
+        Prevent large tool outputs (e.g. read_file content, base64 blobs) from being echoed back to
+        the cloud model, which can trigger provider 400s due to request size/context limits.
+
+        This should preserve enough detail for the model to continue, while capping payload size.
+        """
+        MAX_CHARS = int(self._config.get("max_tool_output_chars", 12000) or 12000)
+        MAX_CHARS = max(2000, min(MAX_CHARS, 100000))
+        MAX_LIST_ITEMS = int(self._config.get("max_tool_output_list_items", 80) or 80)
+        MAX_LIST_ITEMS = max(10, min(MAX_LIST_ITEMS, 500))
+
+        def _clip_str(s: str, n: int) -> str:
+            if not isinstance(s, str):
+                return ""
+            if len(s) <= n:
+                return s
+            head = s[: max(0, n - 200)]
+            tail = s[-200:] if n > 400 else ""
+            return head + ("\n...[truncated_for_model]...\n" if tail else "\n...[truncated_for_model]...\n") + tail
+
+        def _shrink(x: Any, depth: int = 0) -> Any:
+            if depth > 5:
+                return "(truncated_for_model: max_depth)"
+            if isinstance(x, str):
+                # Heuristic: base64 blobs and file contents can be very large.
+                return _clip_str(x, 4096)
+            if isinstance(x, (int, float)) or x is None or isinstance(x, bool):
+                return x
+            if isinstance(x, list):
+                out = []
+                for it in x[:MAX_LIST_ITEMS]:
+                    out.append(_shrink(it, depth + 1))
+                if len(x) > MAX_LIST_ITEMS:
+                    out.append({"truncated_for_model": True, "omitted_items": len(x) - MAX_LIST_ITEMS})
+                return out
+            if isinstance(x, dict):
+                out: Dict[str, Any] = {}
+                # Keep stable/common keys first.
+                key_order = []
+                for k in ("status", "error", "http_status", "code", "path", "truncated", "detail"):
+                    if k in x:
+                        key_order.append(k)
+                for k in x.keys():
+                    if k not in key_order:
+                        key_order.append(k)
+                for k in key_order[:200]:
+                    v = x.get(k)
+                    # Special-case common large fields.
+                    if k in {"content", "output", "stderr", "stdout"} and isinstance(v, str):
+                        out[k] = _clip_str(v, 4096)
+                        if isinstance(v, str) and len(v) > 4096:
+                            out["truncated_for_model"] = True
+                            out[f"{k}_len"] = len(v)
+                        continue
+                    if k in {"data_b64", "body_base64"} and isinstance(v, str):
+                        out[k] = _clip_str(v, 2048)
+                        out["truncated_for_model"] = True
+                        out[f"{k}_len"] = len(v)
+                        continue
+                    if k == "items" and isinstance(v, list):
+                        out[k] = _shrink(v, depth + 1)
+                        continue
+                    out[k] = _shrink(v, depth + 1)
+                if len(x.keys()) > len(key_order[:200]):
+                    out["truncated_for_model"] = True
+                    out["omitted_keys"] = max(0, len(x.keys()) - len(key_order[:200]))
+                return out
+            # Fallback for unknown objects.
+            return str(x)
+
+        try:
+            raw = json.dumps(result, ensure_ascii=True)
+            if len(raw) <= MAX_CHARS:
+                return result
+        except Exception:
+            pass
+
+        shrunk = _shrink(result)
+        # As a last resort, ensure the shrunk object itself is bounded.
+        try:
+            raw2 = json.dumps(shrunk, ensure_ascii=True)
+            if len(raw2) <= MAX_CHARS:
+                return shrunk
+        except Exception:
+            pass
+
+        if isinstance(result, dict):
+            return {
+                "status": result.get("status"),
+                "error": result.get("error"),
+                "http_status": result.get("http_status"),
+                "truncated_for_model": True,
+                "detail": "tool_output_too_large",
+                "keys": list(result.keys())[:80],
+            }
+        return {"truncated_for_model": True, "detail": "tool_output_too_large"}
 
     def _heuristic_plan(self, item: Dict) -> Dict:
         text = str(item.get("text") or "").lower()

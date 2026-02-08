@@ -489,6 +489,17 @@ def _shell_exec_impl(cmd: str, raw_args: str, cwd: str) -> Dict:
             elif cmd == "curl":
                 exit_code = _run_curl_args(args, resolved)
             else:
+                # Make app-provided Python helpers importable for run_python scripts.
+                # The UI can reset these into <user_dir>/lib (see Reset Agent Docs).
+                try:
+                    lib_dir = (resolved / "lib").resolve()
+                    if lib_dir.exists():
+                        lib_str = str(lib_dir)
+                        if lib_str not in sys.path:
+                            sys.path.insert(0, lib_str)
+                except Exception:
+                    pass
+
                 if not args:
                     raise RuntimeError("interactive_not_supported")
                 if args[0] in {"-V", "--version"}:

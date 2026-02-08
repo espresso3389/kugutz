@@ -166,6 +166,13 @@ class AssetExtractor(private val context: Context) {
                 examplesDir.mkdirs()
                 copyAssetDirMissingOnly("user_defaults/examples", examplesDir)
             }
+
+            // Seed Python helper library (missing-only). Used by in-app run_python scripts.
+            val libDir = File(targetDir, "lib")
+            if (assetDirExists("user_defaults/lib")) {
+                libDir.mkdirs()
+                copyAssetDirMissingOnly("user_defaults/lib", libDir)
+            }
             targetDir
         } catch (ex: Exception) {
             Log.e(TAG, "Failed to extract user defaults", ex)
@@ -239,6 +246,13 @@ class AssetExtractor(private val context: Context) {
             if (assetDirExists("user_defaults/examples")) {
                 examplesDir.mkdirs()
                 copyAssetDirOverwrite("user_defaults/examples", examplesDir)
+            }
+
+            // Overwrite shipped Python helper library (explicit user action).
+            val libDir = File(targetDir, "lib")
+            if (assetDirExists("user_defaults/lib")) {
+                libDir.mkdirs()
+                copyAssetDirOverwrite("user_defaults/lib", libDir)
             }
 
             targetDir

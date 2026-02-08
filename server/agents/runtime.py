@@ -1692,6 +1692,7 @@ class BrainRuntime:
                     "vision.frame.save",
                     "vision.image.load",
                     "vision.run",
+                    "uvc.mjpeg.capture",
                     "uvc.ptz.get_abs",
                     "uvc.ptz.get_limits",
                     "uvc.ptz.set_abs",

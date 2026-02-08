@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
+import android.hardware.usb.UsbEndpoint
+import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.hardware.usb.UsbConstants
 import android.os.Build
@@ -662,6 +664,15 @@ class LocalHttpServer(
             }
             (uri == "/usb/stream/status" || uri == "/usb/stream/status/") && session.method == Method.GET -> {
                 return handleUsbStreamStatus()
+            }
+            (uri == "/uvc/mjpeg/capture" || uri == "/uvc/mjpeg/capture/") && session.method == Method.POST -> {
+                return try {
+                    val payload = JSONObject((postBody ?: "").ifBlank { "{}" })
+                    handleUvcMjpegCapture(payload)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "UVC mjpeg/capture handler failed", ex)
+                    jsonError(Response.Status.INTERNAL_ERROR, "uvc_capture_handler_failed")
+                }
             }
             (uri == "/vision/model/load" || uri == "/vision/model/load/") && session.method == Method.POST -> {
                 return try {
@@ -1809,6 +1820,388 @@ class LocalHttpServer(
             )
         }
         return jsonResponse(JSONObject().put("status", "ok").put("items", arr))
+    }
+
+    private data class UvcMjpegFrame(
+        val vsInterface: Int,
+        val formatIndex: Int,
+        val frameIndex: Int,
+        val width: Int,
+        val height: Int,
+        val defaultInterval100ns: Long,
+        val intervals100ns: List<Long>,
+    )
+
+    private fun parseUvcMjpegFrames(raw: ByteArray): List<UvcMjpegFrame> {
+        // Parse a minimal subset of UVC VideoStreaming descriptors out of raw config descriptors.
+        // We only need MJPEG formats/frames to construct a VS_PROBE_CONTROL for streaming.
+        val out = ArrayList<UvcMjpegFrame>()
+        var curVs: Int? = null
+        var curFormatIndex = 0
+        var i = 0
+        while (i + 2 < raw.size) {
+            val dlen = raw[i].toInt() and 0xFF
+            if (dlen <= 0) break
+            if (i + dlen > raw.size) break
+            val dtype = raw[i + 1].toInt() and 0xFF
+            if (dtype == 0x04 && dlen >= 9) {
+                val ifNum = raw[i + 2].toInt() and 0xFF
+                val ifClass = raw[i + 5].toInt() and 0xFF
+                val ifSub = raw[i + 6].toInt() and 0xFF
+                curVs = if (ifClass == 0x0E && ifSub == 0x02) ifNum else null
+                curFormatIndex = 0
+            } else if (dtype == 0x24 && curVs != null && dlen >= 3) {
+                val subtype = raw[i + 2].toInt() and 0xFF
+                if (subtype == 0x06 && dlen >= 11) {
+                    // VS_FORMAT_MJPEG: bFormatIndex at +3.
+                    curFormatIndex = raw[i + 3].toInt() and 0xFF
+                } else if (subtype == 0x07 && dlen >= 26 && curFormatIndex != 0) {
+                    // VS_FRAME_MJPEG
+                    val frameIndex = raw[i + 3].toInt() and 0xFF
+                    val w = (raw[i + 5].toInt() and 0xFF) or ((raw[i + 6].toInt() and 0xFF) shl 8)
+                    val h = (raw[i + 7].toInt() and 0xFF) or ((raw[i + 8].toInt() and 0xFF) shl 8)
+                    fun u32(off: Int): Long {
+                        return (raw[off].toLong() and 0xFF) or
+                            ((raw[off + 1].toLong() and 0xFF) shl 8) or
+                            ((raw[off + 2].toLong() and 0xFF) shl 16) or
+                            ((raw[off + 3].toLong() and 0xFF) shl 24)
+                    }
+                    val defaultInterval = u32(i + 21)
+                    val intervalType = raw[i + 25].toInt() and 0xFF
+                    val intervals = ArrayList<Long>()
+                    if (intervalType == 0) {
+                        // Continuous: dwMin/dwMax/dwStep exist if descriptor is long enough.
+                        if (dlen >= 38) {
+                            val minInt = u32(i + 26)
+                            val maxInt = u32(i + 30)
+                            val step = u32(i + 34).coerceAtLeast(1)
+                            var v = minInt
+                            var guard = 0
+                            while (v <= maxInt && guard++ < 64) {
+                                intervals.add(v)
+                                v += step
+                            }
+                        }
+                    } else {
+                        // Discrete list: intervalType entries of 4 bytes.
+                        var off = i + 26
+                        var n = intervalType
+                        while (n > 0 && off + 4 <= i + dlen) {
+                            intervals.add(u32(off))
+                            off += 4
+                            n--
+                        }
+                    }
+                    out.add(
+                        UvcMjpegFrame(
+                            vsInterface = curVs,
+                            formatIndex = curFormatIndex,
+                            frameIndex = frameIndex,
+                            width = w,
+                            height = h,
+                            defaultInterval100ns = defaultInterval,
+                            intervals100ns = intervals,
+                        )
+                    )
+                }
+            }
+            i += dlen
+        }
+        return out
+    }
+
+    private fun pickBestUvcFrame(frames: List<UvcMjpegFrame>, width: Int, height: Int): UvcMjpegFrame? {
+        if (frames.isEmpty()) return null
+        val w = width.coerceAtLeast(1)
+        val h = height.coerceAtLeast(1)
+        val targetArea = w.toLong() * h.toLong()
+        fun score(f: UvcMjpegFrame): Long {
+            val a = f.width.toLong() * f.height.toLong()
+            return kotlin.math.abs(a - targetArea) + (kotlin.math.abs(f.width - w) + kotlin.math.abs(f.height - h)).toLong() * 2000L
+        }
+        return frames.minByOrNull { score(it) }
+    }
+
+    private fun pickBestInterval(frame: UvcMjpegFrame, fps: Int): Long {
+        val f = fps.coerceIn(1, 120)
+        val desired = 10_000_000L / f.toLong()
+        val list = frame.intervals100ns
+        if (list.isEmpty()) return frame.defaultInterval100ns.takeIf { it > 0 } ?: desired
+        return list.minByOrNull { kotlin.math.abs(it - desired) } ?: desired
+    }
+
+    private fun uvcGetLen(conn: UsbDeviceConnection, vsInterface: Int, controlSelector: Int): Int? {
+        val buf = ByteArray(2)
+        val rc = conn.controlTransfer(
+            0xA1, // IN | Class | Interface
+            0x85, // GET_LEN
+            (controlSelector and 0xFF) shl 8,
+            vsInterface and 0xFF,
+            buf,
+            buf.size,
+            300
+        )
+        if (rc < 2) return null
+        val len = (buf[0].toInt() and 0xFF) or ((buf[1].toInt() and 0xFF) shl 8)
+        return len.takeIf { it in 8..64 }
+    }
+
+    private fun putU16le(b: ByteArray, off: Int, v: Int) {
+        if (off + 2 > b.size) return
+        b[off] = (v and 0xFF).toByte()
+        b[off + 1] = ((v ushr 8) and 0xFF).toByte()
+    }
+
+    private fun putU32le(b: ByteArray, off: Int, v: Long) {
+        if (off + 4 > b.size) return
+        b[off] = (v and 0xFF).toByte()
+        b[off + 1] = ((v ushr 8) and 0xFF).toByte()
+        b[off + 2] = ((v ushr 16) and 0xFF).toByte()
+        b[off + 3] = ((v ushr 24) and 0xFF).toByte()
+    }
+
+    private fun handleUvcMjpegCapture(payload: JSONObject): Response {
+        val handle = payload.optString("handle", "").trim()
+        if (handle.isBlank()) return jsonError(Response.Status.BAD_REQUEST, "handle_required")
+        val conn = usbConnections[handle] ?: return jsonError(Response.Status.NOT_FOUND, "handle_not_found")
+        val dev = usbDevicesByHandle[handle] ?: return jsonError(Response.Status.NOT_FOUND, "device_not_found")
+
+        val widthReq = payload.optInt("width", 1280).coerceIn(1, 8192)
+        val heightReq = payload.optInt("height", 720).coerceIn(1, 8192)
+        val fpsReq = payload.optInt("fps", 30).coerceIn(1, 120)
+        val timeoutMs = payload.optLong("timeout_ms", 12000L).coerceIn(1500L, 60000L)
+        val maxFrameBytes = payload.optInt("max_frame_bytes", 6 * 1024 * 1024).coerceIn(64 * 1024, 40 * 1024 * 1024)
+
+        // Output path under user root.
+        val userRoot = File(context.filesDir, "user").also { it.mkdirs() }
+        File(userRoot, "captures").also { it.mkdirs() }
+        val relPath = payload.optString("path", "").trim().ifBlank {
+            "captures/uvc_${System.currentTimeMillis()}.jpg"
+        }
+        val outFile = resolveUserPath(userRoot, relPath) ?: return jsonError(Response.Status.BAD_REQUEST, "invalid_path")
+        outFile.parentFile?.mkdirs()
+
+        // Parse MJPEG formats/frames and pick a reasonable configuration.
+        val raw = conn.rawDescriptors ?: return jsonError(Response.Status.INTERNAL_ERROR, "raw_descriptors_unavailable")
+        val frames = parseUvcMjpegFrames(raw)
+        val bestFrame = pickBestUvcFrame(frames, widthReq, heightReq)
+            ?: return jsonError(Response.Status.INTERNAL_ERROR, "uvc_mjpeg_frames_not_found")
+
+        val vsInterface = bestFrame.vsInterface
+        val interval = pickBestInterval(bestFrame, fpsReq)
+
+        // Choose an isochronous IN endpoint on the VS interface with the largest packet size.
+        data class EpPick(val intf: UsbInterface, val ep: UsbEndpoint)
+        var pick: EpPick? = null
+        for (i in 0 until dev.interfaceCount) {
+            val intf = dev.getInterface(i)
+            if (intf.id != vsInterface) continue
+            if (intf.interfaceClass != 0x0E || intf.interfaceSubclass != 0x02) continue
+            for (e in 0 until intf.endpointCount) {
+                val ep = intf.getEndpoint(e)
+                val isIso = ep.type == UsbConstants.USB_ENDPOINT_XFER_ISOC
+                val isIn = (ep.address and 0x80) != 0
+                if (!isIso || !isIn) continue
+                val cur = pick
+                if (cur == null || ep.maxPacketSize > cur.ep.maxPacketSize) {
+                    pick = EpPick(intf, ep)
+                }
+            }
+        }
+        val chosen = pick ?: return jsonError(Response.Status.INTERNAL_ERROR, "uvc_iso_endpoint_not_found")
+
+        // Claim + select alternate setting.
+        val claimed = conn.claimInterface(chosen.intf, true)
+        if (!claimed) return jsonError(Response.Status.INTERNAL_ERROR, "claim_interface_failed")
+        runCatching { conn.setInterface(chosen.intf) }
+
+        // Perform a minimal UVC Probe/Commit for MJPEG.
+        val probeLen = uvcGetLen(conn, vsInterface, 0x01) ?: 34
+        val probe = ByteArray(probeLen)
+        // bmHint: set dwFrameInterval
+        putU16le(probe, 0, 0x0001)
+        // bFormatIndex / bFrameIndex
+        if (probe.size >= 4) {
+            probe[2] = (bestFrame.formatIndex and 0xFF).toByte()
+            probe[3] = (bestFrame.frameIndex and 0xFF).toByte()
+        }
+        // dwFrameInterval
+        putU32le(probe, 4, interval)
+
+        fun ctrlOut(controlSelector: Int, data: ByteArray): Int {
+            return conn.controlTransfer(
+                0x21, // OUT | Class | Interface
+                0x01, // SET_CUR
+                (controlSelector and 0xFF) shl 8,
+                vsInterface and 0xFF,
+                data,
+                data.size,
+                600
+            )
+        }
+        fun ctrlIn(controlSelector: Int, len: Int): Pair<Int, ByteArray> {
+            val buf = ByteArray(len.coerceIn(1, 64))
+            val rc = conn.controlTransfer(
+                0xA1, // IN | Class | Interface
+                0x81, // GET_CUR
+                (controlSelector and 0xFF) shl 8,
+                vsInterface and 0xFF,
+                buf,
+                buf.size,
+                600
+            )
+            val out = if (rc > 0) buf.copyOfRange(0, rc.coerceIn(0, buf.size)) else ByteArray(0)
+            return Pair(rc, out)
+        }
+
+        if (ctrlOut(0x01, probe) < 0) return jsonError(Response.Status.INTERNAL_ERROR, "uvc_probe_set_failed")
+        val (probeRc, probeCur) = ctrlIn(0x01, probe.size)
+        val commitData = if (probeRc > 0) {
+            // Some cameras update fields in GET_CUR (e.g. max payload size). Use that for COMMIT.
+            val b = ByteArray(probe.size)
+            java.lang.System.arraycopy(probeCur, 0, b, 0, kotlin.math.min(probeCur.size, b.size))
+            b
+        } else {
+            probe
+        }
+        if (ctrlOut(0x02, commitData) < 0) return jsonError(Response.Status.INTERNAL_ERROR, "uvc_commit_set_failed")
+
+        // Capture a single MJPEG frame by parsing UVC payload headers from isochronous packets.
+        UsbIsoBridge.ensureLoaded()
+        val fd = conn.fileDescriptor
+        if (fd < 0) return jsonError(Response.Status.INTERNAL_ERROR, "file_descriptor_unavailable")
+
+        val epAddr = chosen.ep.address
+        val packetSize = chosen.ep.maxPacketSize.coerceAtLeast(256)
+        val numPackets = payload.optInt("num_packets", 48).coerceIn(8, 512)
+        val isoTimeout = payload.optInt("iso_timeout_ms", 260).coerceIn(20, 6000)
+
+        val deadline = System.currentTimeMillis() + timeoutMs
+        val frame = java.io.ByteArrayOutputStream(1024 * 256)
+        var started = false
+        var lastFid = -1
+
+        fun findSoi(bytes: ByteArray, off: Int, len: Int): Int {
+            val end = (off + len - 1).coerceAtMost(bytes.size - 1)
+            var j = off
+            while (j + 1 <= end) {
+                if ((bytes[j].toInt() and 0xFF) == 0xFF && (bytes[j + 1].toInt() and 0xFF) == 0xD8) return j
+                j++
+            }
+            return -1
+        }
+
+        while (System.currentTimeMillis() < deadline) {
+            val blob: ByteArray = try {
+                UsbIsoBridge.isochIn(fd, epAddr, packetSize, numPackets, isoTimeout) ?: break
+            } catch (_: Exception) {
+                break
+            }
+            if (blob.size < 12) continue
+
+            fun u32le(off: Int): Int {
+                return (blob[off].toInt() and 0xFF) or
+                    ((blob[off + 1].toInt() and 0xFF) shl 8) or
+                    ((blob[off + 2].toInt() and 0xFF) shl 16) or
+                    ((blob[off + 3].toInt() and 0xFF) shl 24)
+            }
+            val magic = u32le(0)
+            if (magic != 0x4F53494B) continue // "KISO"
+            val nPk = u32le(4).coerceIn(0, 1024)
+            val payloadLen = u32le(8).coerceIn(0, 64 * 1024 * 1024)
+            val metaLen = 12 + nPk * 8
+            if (blob.size < metaLen) continue
+            if (blob.size < metaLen + payloadLen) continue
+
+            var metaOff = 12
+            var dataOff = metaLen
+            for (pi in 0 until nPk) {
+                val st = u32le(metaOff)
+                val al = u32le(metaOff + 4).coerceIn(0, payloadLen)
+                metaOff += 8
+                if (al <= 0) continue
+                if (dataOff + al > metaLen + payloadLen) break
+                if (st != 0) {
+                    dataOff += al
+                    continue
+                }
+
+                // UVC payload header.
+                val hlen = blob[dataOff].toInt() and 0xFF
+                if (hlen < 2 || hlen > al) {
+                    dataOff += al
+                    continue
+                }
+                val info = blob[dataOff + 1].toInt() and 0xFF
+                val fid = info and 0x01
+                val eof = (info and 0x02) != 0
+                val err = (info and 0x40) != 0
+                val payloadOff = dataOff + hlen
+                val payloadCount = al - hlen
+                if (err || payloadCount <= 0) {
+                    dataOff += al
+                    continue
+                }
+
+                if (lastFid >= 0 && fid != lastFid && frame.size() > 0 && !eof) {
+                    // Frame boundary without EOF (best-effort).
+                    frame.reset()
+                    started = false
+                }
+                lastFid = fid
+
+                if (!started) {
+                    val soi = findSoi(blob, payloadOff, payloadCount)
+                    if (soi >= 0) {
+                        started = true
+                        frame.write(blob, soi, payloadOff + payloadCount - soi)
+                    }
+                } else {
+                    frame.write(blob, payloadOff, payloadCount)
+                }
+
+                if (frame.size() > maxFrameBytes) {
+                    frame.reset()
+                    started = false
+                }
+
+                if (eof && started && frame.size() >= 4) {
+                    val bytes = frame.toByteArray()
+                    // Best-effort sanity check: look for JPEG SOI.
+                    val soi = findSoi(bytes, 0, bytes.size)
+                    if (soi >= 0) {
+                        val final = if (soi > 0) bytes.copyOfRange(soi, bytes.size) else bytes
+                        try {
+                            java.io.FileOutputStream(outFile).use { it.write(final) }
+                            return jsonResponse(
+                                JSONObject()
+                                    .put("status", "ok")
+                                    .put("rel_path", relPath)
+                                    .put("bytes", final.size)
+                                    .put("vs_interface", vsInterface)
+                                    .put("format_index", bestFrame.formatIndex)
+                                    .put("frame_index", bestFrame.frameIndex)
+                                    .put("width", bestFrame.width)
+                                    .put("height", bestFrame.height)
+                                    .put("interval_100ns", interval)
+                                    .put("endpoint_address", epAddr)
+                                    .put("interface_id", chosen.intf.id)
+                                    .put("alt_setting", chosen.intf.alternateSetting)
+                            )
+                        } catch (ex: Exception) {
+                            return jsonError(Response.Status.INTERNAL_ERROR, "write_failed", JSONObject().put("detail", ex.message ?: ""))
+                        }
+                    } else {
+                        frame.reset()
+                        started = false
+                    }
+                }
+
+                dataOff += al
+            }
+        }
+
+        return jsonError(Response.Status.INTERNAL_ERROR, "uvc_capture_timeout")
     }
 
     override fun openWebSocket(handshake: IHTTPSession): NanoWSD.WebSocket {

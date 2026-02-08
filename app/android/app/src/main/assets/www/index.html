@@ -1338,7 +1338,14 @@
       }
 
       function safeRelPath(p) {
-        const s = String(p || "").trim().replace(/^\/+/, "");
+        // Normalize common "rel_path:" render variants:
+        // - Trailing punctuation: "captures/latest.jpg." or "...jpg," breaks ext detection.
+        // - Wrapped in quotes/backticks/brackets.
+        let s = String(p || "").trim();
+        s = s.replace(/^\/+/, "");
+        s = s.replace(/^["'`<(\[]+/, "");
+        s = s.replace(/["'`>\])]+$/, "");
+        s = s.replace(/[.,;:]+$/, "");
         if (!s) return "";
         if (s.split("/").some(seg => seg === "..")) return "";
         return s;

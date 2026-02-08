@@ -1257,6 +1257,23 @@ class BrainRuntime:
 
             calls = [o for o in output_items if isinstance(o, dict) and o.get("type") == "function_call"]
             if not calls:
+                # Some providers/models occasionally emit an empty output item (no text, no tool calls).
+                # Treat that as non-terminal; otherwise the UI sees "nothing happened".
+                if not message_texts:
+                    pending_input.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "You returned an empty response (no text, no tool calls). "
+                                "You MUST either respond with text or call tools. "
+                                "If the user asked to take a photo and describe it, you must: "
+                                "1) call device_api camera.capture (if not already done), "
+                                "2) then call cloud_request to analyze the captured image (if user allowed cloud upload), "
+                                "3) then provide a textual description and include rel_path: ... for the captured image."
+                            ),
+                        }
+                    )
+                    continue
                 # If we require tool calls for this user request, don't accept a "plain" response
                 # until we've observed at least one tool call.
                 if tool_required_unsatisfied and forced_rounds < 1:

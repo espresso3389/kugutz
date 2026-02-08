@@ -318,6 +318,8 @@ class LocalHttpServer(
                         }
                         // Notify the foreground service so it can advance queued permission notifications.
                         sendPermissionResolved(updated.id, updated.status)
+                        // Also notify the Python agent runtime so it can resume automatically.
+                        notifyBrainPermissionResolved(updated)
                         jsonResponse(
                             JSONObject()
                                 .put("id", updated.id)
@@ -3934,6 +3936,33 @@ class LocalHttpServer(
         intent.putExtra(EXTRA_PERMISSION_ID, id)
         intent.putExtra(EXTRA_PERMISSION_STATUS, status)
         context.sendBroadcast(intent)
+    }
+
+    private fun notifyBrainPermissionResolved(req: jp.espresso3389.kugutz.perm.PermissionStore.PermissionRequest) {
+        // Best-effort: notify the Python brain runtime that a permission was approved/denied so it
+        // can resume without requiring the user to manually say "continue".
+        //
+        // Avoid starting Python just for this; if the worker isn't running yet, ignore.
+        try {
+            if (runtimeManager.getStatus() != "ok") return
+            val body = JSONObject()
+                .put("name", "permission.resolved")
+                .put(
+                    "payload",
+                    JSONObject()
+                        .put("permission_id", req.id)
+                        .put("status", req.status)
+                        .put("tool", req.tool)
+                        .put("detail", req.detail)
+                        .put("identity", req.identity)
+                        // For agent-originated requests, identity is the chat session_id.
+                        .put("session_id", req.identity)
+                        .put("capability", req.capability)
+                )
+                .toString()
+            proxyWorkerRequest("/brain/inbox/event", "POST", body)
+        } catch (_: Exception) {
+        }
     }
 
     private fun maybeGrantDeviceCapability(req: jp.espresso3389.kugutz.perm.PermissionStore.PermissionRequest) {

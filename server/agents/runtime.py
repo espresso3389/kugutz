@@ -48,6 +48,8 @@ class BrainRuntime:
         self._active_identity: str = ""
         # Cache user-root policy docs; re-read when file changes on disk (mtime/size).
         self._user_root_doc_cache: Dict[str, Dict[str, Any]] = {}
+        # permission_id -> state for resuming a paused chat item once the user approves/denies.
+        self._awaiting_permissions: Dict[str, Dict[str, Any]] = {}
 
         self._config = self._load_config()
 
@@ -776,6 +778,46 @@ class BrainRuntime:
 
     def _process_item(self, item: Dict) -> None:
         self._emit_log("brain_item_started", {"id": item.get("id"), "kind": item.get("kind")})
+        if str(item.get("kind") or "") == "event":
+            name = str(item.get("name") or "").strip()
+            payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+            if name == "permission.resolved":
+                pid = str(payload.get("permission_id") or payload.get("id") or "").strip()
+                status = str(payload.get("status") or "").strip()
+                tool = str(payload.get("tool") or "").strip()
+                state = self._awaiting_permissions.pop(pid, None) if pid else None
+                if not state:
+                    self._emit_log("permission_resolved_ignored", {"permission_id": pid, "status": status})
+                    return
+                sid = str(state.get("session_id") or "default").strip() or "default"
+                waiting_tool = str(state.get("tool") or tool or "unknown").strip()
+                if status == "approved":
+                    self._record_message(
+                        "assistant",
+                        f"Permission approved for '{waiting_tool}'. Continuing.",
+                        {"item_id": item.get("id"), "session_id": sid, "actor": "system"},
+                    )
+                    cfg = self.get_config()
+                    provider_url = str(cfg.get("provider_url") or "").strip()
+                    try:
+                        if provider_url.rstrip("/").endswith("/responses"):
+                            self._process_with_responses_tools(state["item"])
+                        else:
+                            # Legacy non-/responses path: re-enqueue a lightweight continuation prompt.
+                            self.enqueue_chat("continue", meta={"session_id": sid, "actor": "system", "tag": "permission_resumed"})
+                    finally:
+                        self._emit_log("brain_item_done", {"id": item.get("id"), "actions": "permission_resume"})
+                    return
+
+                # denied/expired/used/etc: surface clearly to the user
+                self._record_message(
+                    "assistant",
+                    f"Permission {status or 'resolved'} for '{waiting_tool}'. I can't continue this step without it.",
+                    {"item_id": item.get("id"), "session_id": sid, "actor": "system"},
+                )
+                self._emit_log("brain_item_done", {"id": item.get("id"), "actions": "permission_denied"})
+                return
+
         # Record the user message so the agent has per-session context.
         if str(item.get("kind") or "") == "chat":
             sid = self._session_id_for_item(item)
@@ -1336,6 +1378,19 @@ class BrainRuntime:
                 if isinstance(result, dict) and str(result.get("status") or "") in {"permission_required", "permission_expired"}:
                     req = result.get("request") if isinstance(result.get("request"), dict) else {}
                     tool = str(req.get("tool") or name or "unknown")
+                    pid = str(req.get("id") or "").strip()
+                    if pid:
+                        # Remember the paused item so we can resume when Kotlin reports approval/deny.
+                        # Store the original queue item and session_id; _process_with_responses_tools
+                        # will avoid duplicating the last user message when we call it again.
+                        self._awaiting_permissions[pid] = {
+                            "permission_id": pid,
+                            "status": "pending",
+                            "tool": tool,
+                            "session_id": session_id,
+                            "item": item,
+                            "created_at": int(time.time() * 1000),
+                        }
                     self._record_message(
                         "assistant",
                         f"Permission required for '{tool}'. Please approve the in-app prompt/notification to continue.",
